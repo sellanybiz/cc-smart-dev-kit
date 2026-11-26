@@ -5,9 +5,9 @@ import { COMMAND } from "../build-info/names";
 import { isOlder } from "../build-info/semver";
 import { parseOptions } from "../cli/args";
 import { cliPaths } from "../cli/paths";
-import { type ListedWorktree, parseWorktreeList, runGit } from "../hooks/git";
+import { commitArgs, commitIn, type ListedWorktree, parseWorktreeList, runGit } from "../hooks/git";
 import { locateCheckout } from "../project/resolve";
-import { taskContext } from "../tasks/context";
+import { type ProjectConfigRead, taskContext, taskWriteRefusal } from "../tasks/context";
 import { createTaskOps } from "../tasks/ops";
 import { branchTip } from "../tasks/stack-proof";
 import { openWorkDb, workDbFile } from "../tasks/work/db";
@@ -460,12 +460,11 @@ function leftBehind(
   if (existsSync(worktree)) {
     const head = runGit(worktree, ["symbolic-ref", "--short", "HEAD"], ctx.env);
     if (head.ok && head.out !== "") branch = head.out;
-    const commit = runGit(worktree, ["rev-parse", "--verify", "--quiet", "HEAD^{commit}"], ctx.env);
-    if (commit.ok && commit.out !== "") tip = commit.out;
+    tip = commitIn(runGit(worktree, commitArgs("HEAD"), ctx.env)) ?? undefined;
   }
   tip ??= [`refs/heads/${branch}`, `refs/remotes/origin/${branch}`]
-    .map((ref) => runGit(repo, ["rev-parse", "--verify", "--quiet", `${ref}^{commit}`], ctx.env))
-    .find((run) => run.ok && run.out !== "")?.out;
+    .map((ref) => commitIn(runGit(repo, commitArgs(ref), ctx.env)))
+    .find((commit) => commit !== null);
   return tip === undefined ? null : { branch, tip };
 }
 /**
@@ -733,16 +732,14 @@ function resolveBase(
   at: string,
   ref: string,
 ): string | null {
-  const args = ["git", "rev-parse", "--verify", "--quiet", `${ref}^{commit}`];
   if (on) {
-    const found = remoteResult(r, on, args, at);
+    const found = remoteResult(r, on, ["git", ...commitArgs(ref)], at);
     // git exits 1 for a name it does not know; any other failure is not an answer.
     if (found.code === 1) return null;
     if (found.code !== 0) throw new Error("The remote base could not be checked.");
     return found.stdout.trim() || null;
   }
-  const found = runGit(at, args.slice(1), ctx.env);
-  return found.ok && found.out !== "" ? found.out : null;
+  return commitIn(runGit(at, commitArgs(ref), ctx.env));
 }
 function remoteReportFolder(ctx: HerdrContext): string {
   const defaults = cliPaths({ HOME: ctx.paths.home });
@@ -814,8 +811,13 @@ async function start(a: Start, ctx: HerdrContext, r: HcRunner): Promise<number> 
  * since only the lead's identity moves (`adoptLeadPlans`). "Dead" is `ended`, a whole session
  * over, never a dead pid alone (a reopened session keeps its id in a new process).
  */
-function adoptPlans(ctx: HerdrContext, project: string): void {
+function adoptPlans(ctx: HerdrContext, project: string, projectConfig: ProjectConfigRead): void {
   if (!existsSync(workDbFile(ctx.paths))) return;
+  const gate = taskWriteRefusal(projectConfig, ctx.env);
+  if (gate !== null) {
+    ctx.out.line("warn", `Plans were not adopted: ${gate.why}`, { fix: gate.fix });
+    return;
+  }
   const who = ctx.caller ? ctx.caller() : callerOf({ env: ctx.env });
   if (who === null || !who.sessionId) {
     ctx.out.line("warn", "Plans were not adopted: this session cannot be resolved.");
@@ -924,6 +926,12 @@ async function startChild(
       ctx,
       "A task cannot cross projects or machines. Put its text in the brief instead.",
     );
+  // A start that binds its child to a task writes that task after the launch: a project file the
+  // task tools refuse to write with stops it here, before anything launches.
+  if ((a.task || a.plan) && caller.ok) {
+    const gate = taskWriteRefusal(caller.projectConfig, ctx.env);
+    if (gate !== null) return refuse(ctx, gate.why, gate.fix);
+  }
   if (a.task) {
     if (!existsSync(workDbFile(ctx.paths)))
       return refuse(ctx, `Task ${a.task} must exist and be open in this project before launch.`);
@@ -1067,6 +1075,7 @@ async function startChild(
     // A stacked plan's stack counts only when the commit it starts on holds its parent's work.
     const prepared = prepareStart(planWorld, slug, base?.commit);
     if (!prepared.ok) return refuse(ctx, prepared.why, prepared.fix);
+    for (const warning of prepared.warnings) ctx.out.line("warn", warning);
     handout = prepared;
     if (prepared.reserved)
       run.giveBack = releaseAfterFailedStart(
@@ -1598,7 +1607,7 @@ export async function runHerdr(args: string[], ctx: HerdrContext): Promise<numbe
           }
         }
         show(ctx, adopted);
-        adoptPlans(ctx, project.project);
+        adoptPlans(ctx, project.project, project.projectConfig);
         return 0;
       }
       case "plans": {

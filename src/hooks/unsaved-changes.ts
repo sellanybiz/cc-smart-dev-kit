@@ -26,15 +26,13 @@
  */
 import { lstatSync } from "node:fs";
 import { join } from "node:path";
-import { runGit, runGitRaw } from "./git";
+import { pathBatches, runGit, runGitRaw } from "./git";
 import type { Env } from "./run";
 
 /** git's mode for a file that is not there: deleted from the index or the folder. */
 const NO_FILE = "000000";
 /** The two modes of a plain file. Symlinks (120000) and submodules (160000) never count as saved. */
 const FILE_MODES = new Set(["100644", "100755"]);
-/** Paths per git call, so a long list stays far below the system's argument limit. */
-const PATHS_PER_CALL = 200;
 
 /** What one `git status --porcelain=v2` entry asks of the ref's history. */
 interface Wanted {
@@ -236,7 +234,7 @@ function hashFiles(
  */
 function filteredPaths(folder: string, paths: string[], env: Env): Set<string> | null {
   const filtered = new Set<string>();
-  for (const chunk of chunks(paths)) {
+  for (const chunk of pathBatches(paths)) {
     const run = runGitRaw(folder, ["check-attr", "-z", "filter", "ident", "--", ...chunk], env);
     if (!run.ok) return null;
     // <path> NUL <attribute> NUL <value> NUL, for each path and attribute
@@ -256,7 +254,7 @@ function hashChunks(
   env: Env,
 ): Array<{ path: string; version: string }> | null {
   const versions: Array<{ path: string; version: string }> = [];
-  for (const chunk of chunks(paths)) {
+  for (const chunk of pathBatches(paths)) {
     const run = runGit(folder, ["hash-object", ...flags, "--", ...chunk], env);
     if (!run.ok) return null;
     const hashes = run.out.split("\n");
@@ -274,7 +272,7 @@ function hashChunks(
 
 /** True when none of the paths exists on the ref. */
 function allAbsent(folder: string, ref: string, paths: string[], env: Env): boolean {
-  for (const chunk of chunks(paths)) {
+  for (const chunk of pathBatches(paths)) {
     const run = runGitRaw(
       folder,
       ["--literal-pathspecs", "ls-tree", "-r", "-z", "--name-only", ref, "--", ...chunk],
@@ -300,7 +298,7 @@ function allInHistory(
 ): boolean {
   const paths = [...new Set(versions.map((item) => item.path))];
   const seen = new Set<string>();
-  for (const chunk of chunks(paths)) {
+  for (const chunk of pathBatches(paths)) {
     const run = runGitRaw(
       folder,
       [
@@ -334,12 +332,4 @@ function allInHistory(
     }
   }
   return versions.every((item) => seen.has(`${item.path}\0${item.version}`));
-}
-
-function chunks(paths: string[]): string[][] {
-  const out: string[][] = [];
-  for (let at = 0; at < paths.length; at += PATHS_PER_CALL) {
-    out.push(paths.slice(at, at + PATHS_PER_CALL));
-  }
-  return out;
 }

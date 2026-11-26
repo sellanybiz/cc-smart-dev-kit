@@ -9,6 +9,7 @@ import {
   eventsOf,
   getTask,
   holdingUnder,
+  holdsNoteStarting,
   isBlocked,
   isOpen,
   layerProgress,
@@ -148,7 +149,7 @@ export function planProgress(paths: Paths, project: string, who: Who) {
     const hasPhases = all.some((t) => t.kind === "phase" && t.plan === task.plan);
     // The caller's other open plans behind this one, by the rule the task tools own them by.
     const waiting = waitingPlans(all, ownerOf(who), task.plan, (p) =>
-      notesOf(db, p).some((n) => n.text.startsWith(PARK_NOTE_PREFIX)),
+      holdsNoteStarting(db, p, PARK_NOTE_PREFIX),
     );
     return {
       task,

@@ -79,8 +79,9 @@ The store enforces these rules, not the caller:
   the transaction that inserts it. The other plan-shape rules (a phase starts only once it
   holds a task, one plan in flight, a step closes with proof) are enforced by the task tools
   (`ops.ts`), not the store: § Layers, Plan shape.
-- Delete is for a mistake with no notes or tasks, not for finished work. A deleted task's
-  number is never given again: its history still answers to it.
+- Delete is for a mistake with no notes of its own (the kit's `Overlap:` notes do not count) or
+  tasks, not for finished work. A deleted task's number is never given again: its history still
+  answers to it.
 
 ### Layers, types and blocked-by (D76)
 
@@ -336,8 +337,34 @@ so every store has the table from its first write.
 
 `src/tasks/context.ts` is the one resolver of project key, checkout and task settings.
 The project key belongs to the main checkout, shared by its worktrees. A folder outside
-git uses its own real path. A git failure is an error, never a guessed identity. A broken
-project config leaves local work usable.
+git uses its own real path. A git failure is an error, never a guessed identity.
+
+**A project file this kit cannot use stops every task write up front** (6.7.0). Before, a session
+on an older kit could make a plan task and then have `task_update` of its files refused by the
+project's `requires`, which left half a plan. Now `contextOf` keeps the project-file error beside
+its message, with the file when the error is a `requires` this kit does not meet
+(`CcSmartDevKitVersionError`), and `taskWriteRefusal(read, env)` (`context.ts`, the one home of the
+gate) turns it into a reason and a fix. `createTaskOps().run` (`ops.ts`), the one path for the MCP
+server, the `task` command and the portal's actions, asks it right after `taskContext`, before
+the store is opened or a claim moved (`reclaimResumed`):
+
+- every write (create, update, done, note, take, delete) throws `Task writes are refused: <the
+  file's error>. <fix>`, and nothing changes;
+- a read (get, list, search) answers and adds the same text as a line of its own; a list of
+  project or all scope and a search also say `Deploy tasks were not read.`; a read still moves the
+  session's own claims to its new process, which is bookkeeping, not a task write.
+
+The fix for a broken file is `Fix that file; task reads still answer.` For a `requires` the kit
+does not meet, it reads the installed version (`findUserInstall` on Claude Code's
+`installed_plugins.json`, the reader `doctor` uses): when that version differs from the running
+one and meets the file, `The kit on disk (<version>) already meets it: restart this session to
+load it.`; when it is known and does not, `After an update, restart this session to load it.`;
+when it is unknown, both. herdr checks the same gate (`openPlansWorld` in `src/herdr/plans.ts`,
+and `startChild` and `adoptPlans` in `src/herdr/command.ts`), so `plans`, `plans --reserve`,
+`plans --release`, `start --task`, `start --plan` and `adopt` reserve, launch or move nothing
+under such a file. `task import claude-mem` (`src/tasks/command.ts`), the one store writer outside
+`ops.ts` and herdr, asks the same gate before it opens the store; its `--dry-run` writes nothing,
+so it still answers. A folder outside git has no project file, so no gate.
 
 A claim belongs to the Claude process: pid plus start time, not just a session id. A task is
 the caller's own (`ownerOf` in `src/tasks/work/queries.ts`, the one rule the task tools and the
@@ -397,7 +424,11 @@ resumed-claim move still does.
 ## Plans handed to children
 
 A lead can give a queued plan to a linked Herdr child session (5.2.0). The store holds what makes
-that safe: the plan's files, an atomic reservation, and the refusals that keep a second session out.
+that safe: the plan's files, an atomic reservation, and the warnings that tell each session which
+other plan shares its files. **An overlap warns and never refuses** (6.7.0, the owner's ruling:
+"always warn, no block option"): two plans that share files may run at once, and the git merge,
+with the catch-up of the plan that merges second, settles it (`plugin/skills/build/SKILL.md` § 6,
+"An overlapping plan"). No setting brings the block back.
 The commands and the live gates are `docs/design/herdr.md` § Handing out plans; the modes are
 `plugin/skills/build/SKILL.md` § Lead + children and coordinator modes.
 
@@ -431,17 +462,17 @@ overlap, never fewer.
 
 **Stacked plans** (schema 7, 6.3.0). A plan names the plan it is built on in `stacked_on` (its
 slug; `task_create` and `task_update`, CLI `--stacked-on`, `--no-stack` clears it). Every overlap
-judgment (`reservePlan`, `refuseHeldOverlap`, `refuseFlightOverlap`, and `herdr plans`' lines and
+judgment (`reservePlan`, `heldOverlaps`, `flightOverlaps`, and `herdr plans`' lines and
 drift) first takes the held plans through `rivalsOf`, which drops the plan itself and its stacked
 pair (`isStackedPair`): the plan it is stacked on, or one stacked on it, while that parent holds
 its files (`parentHolds`): open (pending or in progress), or done and still reserved until its pull
 request merges (a plan built on its parent's branch shares those files by construction, so judging
-the pair then would only refuse the plan the stack exists for). Only that
+the pair then would only warn about the plan the stack exists for). Only that
 one plan is skipped: a plan stacked on a stacked plan still meets the first parent, and every other
-plan blocks as before. Once the parent is released (its pull request merged or closed, or the plan
+plan is warned about as before. Once the parent is released (its pull request merged or closed, or the plan
 dropped, which releases it) it holds nothing, so the stack ends with it.
 
-A stack lifts a check, so it is never taken on a session's word alone (6.3.0 fix). **Same lead:**
+A stack silences a warning, so it is never taken on a session's word alone (6.3.0 fix). **Same lead:**
 the store refuses a stack unless the caller leads both plans (`leadsPlan`: it holds the plan's
 reservation, `isLead`, or owns its task, `ownerOf`). The reservation counts because a plan handed to
 a child becomes the child's task once the child takes it, while the lead stays in its `lead_*`
@@ -486,7 +517,7 @@ The proof uses fork points. The default branch comes from `baseBranch` (`worktre
   on it proves nothing.
 
 A parent with no branch git knows, a start that names no commit, and any git error all leave the
-pair as rivals: it fails closed. When the grandparent is finished (it holds no files) and its
+pair as rivals: it fails closed, so the pair is warned about. When the grandparent is finished (it holds no files) and its
 branch is gone, as after a squash merge, the fix clears the parent's stack on it rather than asking
 for a fetch; the parent's own base still fences a wrong start. A stacked pair with one fork point
 costs nine git calls (T, T on D, the parent's base, S, the fork points, the parent's first-parent
@@ -498,27 +529,32 @@ once per judgment, and the task tools read the default branch once more (two cal
 two leads runs none, and a project with no stack runs none at all. The store refuses a stack on a task that is not a plan,
 on itself, on a slug with no plan, on a plan the caller does not lead, and one that
 closes a loop. Setting or clearing a stack on a held plan is judged like a new list, so clearing it
-while the two held plans share files is refused. A plan another plan is stacked on is not deleted
+while the two held plans share files warns. A plan another plan is stacked on is not deleted
 until that stack is cleared, so a new plan made under the same slug never inherits it. The column
 is additive (`min_compatible` stays 1); an older kit never reads it and judges the pair as an
-overlap, which only refuses more. `task_list`, `task_get` and the answers show `stacked on <slug>`
+overlap, which only says more (a kit before 6.7.0 refuses it). `task_list`, `task_get` and the answers show `stacked on <slug>`
 in a plan's brackets; `herdr plans` shows `(stacked on <slug>)` after the plan's name.
 
 **Held.** `heldPlans` is every plan with a reservation, whatever its status, until it is released,
 plus every open plan in flight of **any** session, so a solo session's plan counts. A held plan's
 files are its stored list plus, for a plan with a recorded branch, the branch diff the caller read
-before the transaction (`extraFiles`). `task_update` of `files` on a held plan refuses an overlap
-with another held plan, from stored lists only, in the transaction. A held plan with no stored
-list and no branch diff holds nothing a check can find, and unknown is never clear: a reservation
-or hand-out beside it is refused, with the plan named and the fix: set its files, or finish, park
-or drop it. A plan already in flight when 5.2.0 is installed has no list, so it reads this way.
+before the transaction (`extraFiles`). `task_update` of `files` (or `stacked_on`) on a held plan
+is judged against the other held plans, from stored lists only, in the transaction
+(`heldOverlaps`). A held plan with no stored list and no branch diff holds nothing a check can
+find, and unknown is never clear: a reservation or a hand-out beside it gets an
+`Overlap unknown with <plan>:` line (`<plan> has no file list, so no overlap with it can be
+ruled out`, `unlistedWords`) with the fix (`task_update` on it with files), and no note,
+since there are no paths to note. A plan already in flight when 5.2.0 is installed has no list, so
+it reads this way.
 
 **`reservePlan`** runs inside `writeWork`. It refuses a caller that does not own the plan or has no
-session, a plan that is not pending, one that is already reserved, one with no file list, one with an
-open blocker (the store's view), one whose files overlap a held plan, and any held plan with no file
-list and no branch diff. Each refusal names the
-plan in the way and the files; an overlap with a finished, unreleased plan says so and that
-`herdr plans` releases it. On success it writes the lead, the holder kind and a new hand-out id.
+session, a plan that is not pending, one that is already reserved, one with no file list (`has no
+file list: set it first (task_update with files), so overlaps can be checked`: later plans can be
+compared with it only through its list), and one with an open blocker (the store's view). Each
+refusal names its reason. An overlap with a held plan, and a held plan with no file list and no
+branch diff, never refuse: each goes into `ReservePlan.found` for the caller to warn about. Two
+reservations at once both pass, and the second reads the first's write, so it finds their
+overlap. On success it writes the lead, the holder kind and a new hand-out id.
 `releasePlan` clears all five columns, guards the hand-out id and `updated_at` it was given (so a
 plan handed out again meanwhile is left alone) and is idempotent: releasing a plan that is not
 reserved changes nothing and adds no history. A **drop releases by itself; a done plan does
@@ -545,28 +581,77 @@ brief names. The lead never starts a plan whose holder is a child, owned or not:
 or let the child build it. Every existing refusal and message is unchanged.
 
 **The solo first start.** A plan going into flight is judged in the same write
-(`refuseFlightOverlap`, `store.ts`), over stored lists with the same `filesOverlap`, against every
+(`flightOverlaps`, `store.ts`), over stored lists with the same `filesOverlap`, against every
 held plan but its own: a plan reserved for another lead or child, or in flight in another session.
 Any task of the plan that starts puts it into flight, so any of them is judged (`enteringPlan`): its
 own task, a phase, a step, a task created already running, and a running task moved into it,
 whoever owns the plan (`insertTask` and `applyUpdate` share the one check). A plan already
 in flight is not judged again. The `plans.mergeFiles` and case read (`planFilesCheck`) is taken
-before the lock, once for each such start and never for a step in a running plan. An overlap is
-refused, naming the plan and the way out for each plan in the way: a reserved plan holds its files
-until its pull request merges or closes; a plan in flight, until it is done or parked, and if its
-session is gone, take it (`task_take`), or park or drop it. Changing this plan's files is the other
-way out. A plan with no list is refused while a **reserved** plan is held, with the fix. Beside
-another session's unreserved plan alone it starts as before, and a plan whose list overlaps that
-plan is refused: only a list can show it. A session that hands out no plan, and has no other
-session's plan in flight, sees no new refusal. The plan's own reservation, as the lead's `self` or
-a child's take of its hand-out, never counts against it.
+before the lock, once for each such start and never for a step in a running plan. The start goes
+through, and each overlap goes into `FilesCheck.found`. A plan with no list beside a **reserved**
+plan cannot be compared with it, and that is collected too; beside another session's unreserved
+plan alone it is not. The plan's own reservation, as the lead's `self` or a child's take of its
+hand-out, never counts against it.
+
+**The warning and the note** (`warnOverlaps`, `src/tasks/files-check.ts`). After the write lock,
+the caller turns what the write collected into one line for each pair of plans and set of shared
+paths, for its answer: `task_create`, `task_update` and a start, through the task tools and the
+`task` command, and `herdr plans --reserve` and `herdr start --plan`. The same text is saved as a
+note on **both** plans, once (`addNotesOnce`, keyed by the note's head; a wider or narrower set of
+shared paths is a new note). The note is written without moving the plans' `updated_at`
+(`saveNote`): another lead's `releasePlan`, `swapPlanAgent` and herdr's hand-out grace key on it,
+and a note is no move of the plan. The text, in this order:
+
+- the head: `Overlap: #<n> "<subject>" and #<m> "<subject>" share <paths>.` (`overlapSummary`,
+  the words `herdr plans` uses too), the two plans in number order and each shared path from the
+  lower plan's list, with the higher plan's path beside it when they differ (`src/b/ (src/b/x.ts)`),
+  sorted;
+- `Leads: #<n> session <id>; …`, when a lead is known (the reservation's session, else the task's
+  owner);
+- for a plan that is done but still reserved, that it is finished and holds its files until its
+  pull request merges or closes, and that `herdr plans` then releases them (`finishedWords`, the
+  words `herdr plans` uses too);
+- a pointer to the rule, never a copy of it: ``Both may run at once; the plan that merges second
+  catches up (`/cc-smart-dev-kit:build` § 6, An overlapping plan).``;
+- when `plans.mergeFiles` was not read in full, that a merge file may count, and why;
+- when the shared paths hold files the base marks `linguist-generated` (read only here, only for an
+  overlap, through `src/project/generated.ts` with base-only attributes; a folder entry is read as
+  the files the base holds in it): `origin/<base> marks <files> generated`, then one of:
+  - the ready line `cc-smart-dev-kit workflow propose plans.mergeFiles <list>` (the current list
+    and those files, comma-joined), which opens the pull request that leaves them out of every overlap once the person
+    merges it. It is printed only when listing them would settle those files: the warning runs
+    `filesOverlap` again on the two lists as compared, with that list, and prints it when no shared
+    folder still holds one of them (other shared files may still overlap). The value is written by
+    `shellWord`: bare when it holds only letters, digits and `_ . / -` (one plain path), else in
+    single quotes (any list of two, since a comma is quoted), so a `$` or a backtick stays literal;
+  - for a folder both plans list, which a merge file never settles (`settledBy`), the folder and
+    the two ways that do: narrow that folder entry to the files the plan changes, or put the
+    folder itself in `plans.mergeFiles`;
+  - for a list too long for one line, the same advice to put their folder in `plans.mergeFiles`;
+  - for a path the propose value cannot carry (`workflow propose`'s own parser would not read the
+    list back as it is), no propose line: the note names it and says to list it in
+    `plans.mergeFiles` by hand.
+
+  With a list not read in full there is no propose line, since the line replaces the whole list.
+  Git older than 2.40, or no base ref, gives the plain warning. A reader that throws adds one line,
+  `The generated files could not be read: <why>`, and the warning is plain: it runs after the
+  write committed, so it never turns the answer into an error.
+
+Each list of paths in a note (the shared paths, the generated files, the folders) is capped at
+about 2,000 characters, the first path always shown, then `and <k> more`, so a note always fits
+under the note limit and is saved on both plans. When the head's list is cut short, the head also
+carries a short hash of the whole path set, so two sets that differ only past the cut each get a
+note. The kit marks its own overlap notes in the note's history, and `task_delete` lets a task go
+when every note on it is such a note (a plan that only ever got overlap notes); any other note,
+a hand-written one that starts with `Overlap:` included, still keeps it.
 
 **The classifier** (`classifyLeadPlans`, `src/tasks/work/lead-plans.ts`) is the store-only reader
 the status line and the keep-going hook share: no git, no gh, no hc. For the plans this caller
 leads, and the queued plans it laid, it returns `own` (holder `self`, reserved by the lead for itself), `with-child`, `child-gone`,
-`merging` (closed, still reserved), `waiting` (an open blocker), `no-files` and `ready`. `ready`
-means ready by the store: overlaps need the branch diffs, which `reservePlan` and `herdr plans`
-read. A hand-out the lead still owns reads `with-child`. After a take, `child-gone` needs the
+`merging` (closed, still reserved), `waiting` (an open blocker), `no-files` and `ready`. An
+overlap never makes a plan not ready (6.7.0), so this `ready` and `herdr plans`' agree;
+`herdr plans` also reads the branch diffs, to name an overlap in the plan's line. A hand-out the
+lead still owns reads `with-child`. After a take, `child-gone` needs the
 child's session over (`sessionEnded`: its process gone **and** no running session carries its id)
 for its maker and for its claim, if it has one. A reopened child that has not yet made a task call
 reads `with-child`, and a child that cannot be proved either way does too: a resume must never

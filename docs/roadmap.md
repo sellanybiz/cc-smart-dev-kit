@@ -19,7 +19,9 @@ gates are instructions now. The design: [hooks](design/hooks.md) § Retired in 6
 Queued plans can run in three modes, chosen by `plans.runMode`: **solo** (as before), **lead +
 children** (the lead builds one plan and hands each other ready plan to a linked Herdr session)
 or **coordinator** (the lead builds nothing). A plan stores its file list, and the store reserves
-a plan in one step before its child starts, so two plans that share a file never run at once. A
+a plan in one step before its child starts, so two plans that share a file never ran at once
+(since 6.7.0 an overlap only warns, and both plans run: [tasks](design/tasks.md) § Plans handed
+to children). A
 plan waits until the pull request of every plan it depends on has merged. `herdr start --plan`
 hands a plan out and resumes a gone child, `herdr plans [--wait]` shows where each plan stands,
 and the status line and the Stop hook name the next step. `plans.mergeFiles` lists the paths

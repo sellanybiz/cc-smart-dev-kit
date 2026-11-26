@@ -11,7 +11,7 @@ import { DEPLOY_TASKS_SINCE } from "../project/config";
 import { locateCheckout } from "../project/resolve";
 import { resolvePlans } from "../workflow/resolve";
 import { baseBranch } from "../worktrees/command";
-import { type TaskContext, taskContext } from "./context";
+import { type TaskContext, taskContext, taskWriteRefusal } from "./context";
 import {
   addDeployNote,
   closeDeployTask,
@@ -23,7 +23,7 @@ import {
   updateDeployTask,
 } from "./deploy/files";
 import { type DeployTask, isDeployTaskId } from "./deploy/format";
-import { planFilesCheck } from "./files-check";
+import { type OverlapCheck, planFilesCheck, warnOverlaps } from "./files-check";
 import {
   planInTheWay,
   planNote,
@@ -48,6 +48,7 @@ import {
   eventsOf,
   freedBy,
   getTask,
+  holdsNoteStarting,
   inFlightPlanOf,
   isInFlight,
   isLead,
@@ -70,8 +71,10 @@ import {
   type FilesCheck,
   insertNote,
   insertTask,
+  label,
   layPhase,
   type PhaseCap,
+  type PlanOverlap,
   planTask,
   reclaimResumed,
   refuseOverCap,
@@ -185,6 +188,9 @@ function isFolderOnDisk(root: string, path: string): boolean {
   return existsSync(full) && statSync(full).isDirectory();
 }
 
+/** What a read adds when the project file stopped it from reading the deploy task folder. */
+const DEPLOY_NOT_READ = "Deploy tasks were not read.";
+
 const DELETE_TRACKED =
   "Tracked deploy task: it is part of a commit, so close it with task_done instead";
 
@@ -203,17 +209,15 @@ export interface TaskOpsOptions {
    */
   refuseBlockingDrop?: boolean;
   /**
-   * How a new file list on a held plan is compared (`plans.mergeFiles` and case). Read from git
-   * before the write lock; tests pass their own. Default: `planFilesCheck` of the caller's folder.
+   * How a plan is compared with the held plans (`plans.mergeFiles` and case) when it starts or a
+   * held plan's list changes, and what the warning after the write reads. Read from git before
+   * the write lock; tests pass their own. Default: `planFilesCheck` of the caller's folder.
    */
-  filesCheck?: (cwd: string) => FilesCheck;
+  filesCheck?: (cwd: string) => OverlapCheck;
 }
 function value<T>(result: Result<T>): T {
   if (!result.ok) throw new Error(result.why);
   return result.value;
-}
-function label(task: WorkTask): string {
-  return `#${task.number} "${task.subject}"`;
 }
 /**
  * What a close adds to its answer: the caller's own work it just made startable (`freedBy`), in
@@ -303,6 +307,15 @@ export function createTaskOps(options: TaskOpsOptions = {}) {
       const cwd = caller?.cwd ?? options.cwd?.() ?? process.cwd();
       const ctx = taskContext(cwd, env);
       if (!ctx.ok) throw new Error(ctx.why);
+      // A project file this kit cannot use stops a write here, before the store is opened or a
+      // claim moved, so no write lands half done. A read answers and names it on a line of its own.
+      const reading = READ_ONLY_OPERATIONS.has(operation);
+      const gate = taskWriteRefusal(ctx.projectConfig, env);
+      const gateWhy = gate === null ? null : `${gate.why}. ${gate.fix}`;
+      if (gateWhy !== null) {
+        if (!reading) throw new Error(gateWhy);
+        notes.push(gateWhy);
+      }
       // Deploy task files are written where the command runs: an explicit `cwd` (the CLI's own
       // folder) wins over the session record's, so a close lands in the checkout the gates read.
       // Work-task identity and project stay with `ctx`. Read once, and only when it differs.
@@ -322,7 +335,7 @@ export function createTaskOps(options: TaskOpsOptions = {}) {
         if (!reclaimed.ok) {
           // A read still answers, with the failure on a line of its own; a write fails loudly.
           const why = `claims of this session not moved: ${reclaimed.why}`;
-          if (!READ_ONLY_OPERATIONS.has(operation)) throw new Error(why);
+          if (!reading) throw new Error(why);
           notes.push(`${why}; the next call retries`);
         }
       }
@@ -385,19 +398,35 @@ export function createTaskOps(options: TaskOpsOptions = {}) {
         const chosen = baseBranch(locateCheckout(root, { env }), env, root);
         return provedStacks(seen, handBackGit, chosen.from === "default" ? null : chosen.base);
       };
+      // The overlaps this call's write finds (`FilesCheck.found`): warned about after it.
+      const found: PlanOverlap[] = [];
+      let filesRead: OverlapCheck | undefined;
+      /** The files check (`planFilesCheck`, or the test's own), read from git once per call. */
+      const filesCheck = (): OverlapCheck => {
+        filesRead ??= (options.filesCheck ?? planFilesCheck)(cwd);
+        return filesRead;
+      };
       /**
-       * What an overlap is judged by, read from git before the write lock: the files check
-       * (`planFilesCheck`, or the test's own) and the proved stacks (`readStacks`) of `seen`.
+       * What an overlap is judged by, read from git before the write lock: the files check and the
+       * proved stacks (`readStacks`) of `seen`, with `found` for what the write finds.
        */
       const readCheck = (seen: readonly WorkTask[]): FilesCheck => ({
-        ...(options.filesCheck ?? planFilesCheck)(cwd),
+        ...filesCheck(),
         stacked: readStacks(seen),
+        found,
       });
+      /**
+       * The warning lines for the overlaps the write found, after its lock (`warnOverlaps`: the
+       * `Overlap:` notes, and the generated files among the shared paths, which need git).
+       */
+      const warnFound = () => {
+        if (found.length > 0) notes.push(...warnOverlaps(store, found, filesCheck(), who, now));
+      };
       /**
        * A plan's new file list, checked before the write lock: each entry is normalised (D2) and
        * a folder written without its `/` is refused with the fix. It always reads `plans.mergeFiles`
        * and case from git here (whether the plan is held is only known inside the transaction), so
-       * no git runs under the lock; the store then judges an overlap there.
+       * no git runs under the lock; the store then finds any overlap there.
        */
       const filesWrite = (files: readonly string[], seen: readonly WorkTask[]) => {
         for (const raw of files) {
@@ -410,7 +439,7 @@ export function createTaskOps(options: TaskOpsOptions = {}) {
       };
       /**
        * A plan's new file list and stack, as one update: a stack set or cleared on a held plan is
-       * judged like a new list (`refuseHeldOverlap`), so it reads the same check before the lock,
+       * judged like a new list (`heldOverlaps`), so it reads the same check before the lock,
        * on `seen` (`asWritten`). Null when the call changes neither.
        */
       const planWrite = (
@@ -429,14 +458,13 @@ export function createTaskOps(options: TaskOpsOptions = {}) {
         };
       };
       /**
-       * How a plan's start is judged against the plans held for others (the store refuses an
+       * How a plan's start is judged against the plans held for others (the store finds an
        * overlap in the start's own write): the real `plans.mergeFiles` and case read, taken before
        * the lock, whenever this start puts a plan into flight (it has a plan row that is not in
        * flight yet). A step in a plan that already runs reads nothing, so git runs once per plan
-       * start, never once per step. The store's own default (nothing ignored, case compared) is
-       * for a caller with no read. It judges this path in one race: the read here sees the plan
-       * in flight, then its last running task closes before the lock, so the start is judged with
-       * that default.
+       * start, never once per step. With no read the store does not judge the start. That is so
+       * in one race: the read here sees the plan in flight, then its last running task closes
+       * before the lock, so that start warns of no overlap.
        */
       const startCheck = (
         plan: string | null,
@@ -648,6 +676,7 @@ export function createTaskOps(options: TaskOpsOptions = {}) {
                 return listed === null ? row : applyUpdate(store, row.id, listed, who, now);
               }),
             );
+            warnFound();
             return {
               ok: true,
               text: `${label(made)} · plan ${slug}${there ? " · it was there already" : ""}`,
@@ -729,6 +758,7 @@ export function createTaskOps(options: TaskOpsOptions = {}) {
             return made;
           }),
         );
+        warnFound();
         const byId = new Map(allTasks(store, ctx.project).map((t) => [t.id, t]));
         return {
           ok: true,
@@ -896,6 +926,7 @@ export function createTaskOps(options: TaskOpsOptions = {}) {
             return changed;
           }),
         );
+        warnFound();
         const afterAll = allTasks(store, ctx.project);
         const byId = new Map(afterAll.map((t) => [t.id, t]));
         const closed = updated.status === "done" || updated.status === "dropped";
@@ -1104,6 +1135,7 @@ export function createTaskOps(options: TaskOpsOptions = {}) {
               (input.include_closed || t.status === "open") &&
               `${t.title}\n${t.body}`.toLowerCase().includes(input.text.toLowerCase()),
           );
+        else if (gateWhy !== null) notes.push(DEPLOY_NOT_READ);
       } else {
         const input = taskSchemas.list.parse(raw);
         planLedger = input.scope === "plan";
@@ -1139,6 +1171,7 @@ export function createTaskOps(options: TaskOpsOptions = {}) {
           );
         } else if (deployReadable())
           projects = projectTasks(!openOnly).filter((t) => !openOnly || t.status === "open");
+        else if (gateWhy !== null) notes.push(DEPLOY_NOT_READ);
       }
       const selectedIds = new Set(selected.map((t) => t.id));
       const byId = new Map(all.map((t) => [t.id, t]));
@@ -1170,11 +1203,7 @@ export function createTaskOps(options: TaskOpsOptions = {}) {
         // `parked:` note counts as parked only once it is not running (`planQueueState`).
         const queue =
           planLedger && task.kind === "plan" && isOpen(task)
-            ? planQueueState(
-                all,
-                task,
-                notesOf(store, task).some((n) => n.text.startsWith(PARK_NOTE_PREFIX)),
-              )
+            ? planQueueState(all, task, holdsNoteStarting(store, task, PARK_NOTE_PREFIX))
             : undefined;
         lines.push(
           `${"  ".repeat(depth)}#${task.number} [${stateWords(task, byId, false, queue)}] ${task.subject}${progress}${binding}${state === "another session" ? " (another session)" : ""}`,

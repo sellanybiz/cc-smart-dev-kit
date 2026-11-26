@@ -481,7 +481,7 @@ import { dirname as dirname3, join as join6 } from "path";
 
 // src/build-info/index.ts
 var info = {
-  version: "6.6.0",
+  version: "6.7.0",
   repo: "sellanybiz/cc-smart-dev-kit",
   dependencies: [
     {
@@ -503,7 +503,7 @@ var PLUGIN_INSTALL_COMMAND = `claude plugin install ${PLUGIN_ID}`;
 var PLUGIN_UPDATE_COMMAND = `claude plugin update ${PLUGIN_ID}`;
 
 // src/hooks/checked-config.ts
-var PARSER_FINGERPRINT = "4823944e2b30c1e4a49af5e0fe9abc4b1b32e9d4d5e184fab4055002e51367ce";
+var PARSER_FINGERPRINT = "e8f36a50af9582ba2986fcdc57a830efb02c05b6c3ee3fb6e5eb73c29a6778d5";
 var CHECKED_DIR = "checked";
 var CHECKED_CACHE_LIMIT = 64;
 var CHECKED_FILE_MAX_BYTES = 256 * 1024;
@@ -8373,6 +8373,9 @@ var TASK_TOOLS_ALLOW_RULE = `mcp__${TASKS_SERVER_NAME}__*`;
 var TASK_COMMAND = `${COMMAND} task`;
 var MAX_PHASE = 8;
 var PHASE_RULE = `1-${MAX_PHASE} characters: ASCII letters, digits, ".", "_" and "-", a letter or a digit at each end, never "--"`;
+var OVERLAP_NOTE = "Overlap:";
+var OVERLAP_WARNS = `the answer warns, and both plans get an ${OVERLAP_NOTE} note`;
+var PLAN_FILES_WORDS = `Plan task only: the repo-relative paths the plan changes, with / separators; a folder ends in /. Two plans overlap when a path is equal or inside the other's folder (inside a plans.appendOnly folder, only the same file). An overlap with a reserved or running plan never refuses: ${OVERLAP_WARNS}. The list replaces the stored one; an empty list clears it.`;
 
 // src/tasks/context.ts
 function projectKey(repo) {
@@ -8833,11 +8836,6 @@ var FIND_INSTALL_JS = [
   "process.stdout.write(e.installPath);"
 ].join("");
 
-// src/regex-escape.ts
-function escapeRegex2(text) {
-  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-
 // src/worktrees/paths.ts
 var WORKTREES_FOLDER_SEGMENTS = [".claude", "worktrees"];
 var WORKTREES_GITIGNORE_ENTRY = `${WORKTREES_FOLDER_SEGMENTS.join("/")}/`;
@@ -8846,6 +8844,11 @@ function worktreeBranch(name) {
 }
 var SUBAGENT_NAME_PREFIX = "agent-";
 var SUBAGENT_BRANCH_PREFIX = worktreeBranch(SUBAGENT_NAME_PREFIX);
+
+// src/regex-escape.ts
+function escapeRegex2(text) {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
 
 // src/hooks/subagent-worktree.ts
 var FOLDER_PATTERN = WORKTREES_FOLDER_SEGMENTS.map(escapeRegex2).join(String.raw`[\\/]`);

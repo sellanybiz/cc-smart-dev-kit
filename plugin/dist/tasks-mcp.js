@@ -21525,7 +21525,7 @@ var COMMAND = "cc-smart-dev-kit";
 
 // src/build-info/index.ts
 var info = {
-  version: "6.6.0",
+  version: "6.7.0",
   repo: "sellanybiz/cc-smart-dev-kit",
   dependencies: [
     {
@@ -21550,8 +21550,8 @@ var PLUGIN_UPDATE_COMMAND = `claude plugin update ${PLUGIN_ID}`;
 var TASKS_SERVER_NAME = `${COMMAND}-tasks`;
 
 // src/tasks/ops.ts
-import { existsSync as existsSync8, readFileSync as readFileSync8, rmSync as rmSync3, statSync as statSync4 } from "fs";
-import { join as join8, relative as relative2 } from "path";
+import { existsSync as existsSync9, readFileSync as readFileSync9, rmSync as rmSync4, statSync as statSync4 } from "fs";
+import { join as join9, relative as relative2 } from "path";
 
 // src/tasks/schemas.ts
 import { isAbsolute } from "path";
@@ -21680,8 +21680,10 @@ var TASK_TOOLS_ALLOW_RULE = `mcp__${TASKS_SERVER_NAME}__*`;
 var TASK_COMMAND = `${COMMAND} task`;
 var MAX_PHASE = 8;
 var PHASE_RULE = `1-${MAX_PHASE} characters: ASCII letters, digits, ".", "_" and "-", a letter or a digit at each end, never "--"`;
-var PLAN_FILES_WORDS = "Plan task only: the repo-relative paths the plan changes, with / separators; a folder ends in /. Two plans overlap when a path is equal or inside the other's folder (inside a plans.appendOnly folder, only the same file); a plan that overlaps a reserved or running plan is not handed out. The list replaces the stored one; an empty list clears it.";
-var STACKED_ON_WORDS = "Plan task only: the slug of your own plan this plan is built on. The overlap check skips that one plan, both ways, while it holds its files (open, or done and reserved until its pull request merges), one lead leads both, and this plan is built on its work: that plan records its branch and base, its branch has commits past the default branch and past that base, and this plan's start (its herdr start base, or its base with its own branch recorded) holds some of them and is on this plan's own branch; every other plan still blocks. Never itself, a missing plan, another lead's plan or a loop; null clears it.";
+var OVERLAP_NOTE = "Overlap:";
+var OVERLAP_WARNS = `the answer warns, and both plans get an ${OVERLAP_NOTE} note`;
+var PLAN_FILES_WORDS = `Plan task only: the repo-relative paths the plan changes, with / separators; a folder ends in /. Two plans overlap when a path is equal or inside the other's folder (inside a plans.appendOnly folder, only the same file). An overlap with a reserved or running plan never refuses: ${OVERLAP_WARNS}. The list replaces the stored one; an empty list clears it.`;
+var STACKED_ON_WORDS = "Plan task only: the slug of your own plan this plan is built on. The overlap warning skips that one plan, both ways, while it holds its files (open, or done and reserved until its pull request merges), one lead leads both, and this plan is built on its work: that plan records its branch and base, its branch has commits past the default branch and past that base, and this plan's start (its herdr start base, or its base with its own branch recorded) holds some of them and is on this plan's own branch; every other plan is still warned about. Never itself, a missing plan, another lead's plan or a loop; null clears it.";
 
 // src/tasks/work/types.ts
 var SUBJECT_LIMIT = 200;
@@ -21891,17 +21893,114 @@ function gitEnv(base) {
   return env;
 }
 
+// src/workflow/reviews.ts
+import { createHash } from "crypto";
+
+// src/setup/file-mode.ts
+import { chmodSync, fchmodSync } from "fs";
+function failureIsFatal(platform) {
+  return platform !== "win32";
+}
+function setFileMode(fileOrFd, mode, platform = hostPlatform()) {
+  try {
+    if (typeof fileOrFd === "number")
+      fchmodSync(fileOrFd, mode);
+    else
+      chmodSync(fileOrFd, mode);
+  } catch (error) {
+    if (failureIsFatal(platform))
+      throw error;
+  }
+}
+
+// src/setup/lock.ts
+var FALLBACK_STALE_MS = 10 * 60 * 1000;
+
+// src/setup/write.ts
+import {
+  closeSync,
+  existsSync,
+  fsyncSync,
+  lstatSync,
+  mkdirSync,
+  openSync,
+  readdirSync,
+  readFileSync,
+  readlinkSync,
+  realpathSync,
+  renameSync,
+  statSync,
+  unlinkSync,
+  writeFileSync
+} from "fs";
+import { basename, dirname, join as join3, resolve } from "path";
+function writeTemp(file, content, mode) {
+  const dir = dirname(file);
+  mkdirSync(dir, { recursive: true });
+  const temp = join3(dir, `.${basename(file)}.cc-smart-dev-kit-tmp-${process.pid}-${crypto.randomUUID()}`);
+  try {
+    const fd = openSync(temp, "wx", mode);
+    try {
+      writeFileSync(fd, content);
+      fsyncSync(fd);
+    } finally {
+      closeSync(fd);
+    }
+    setFileMode(temp, mode);
+  } catch (error) {
+    if (existsSync(temp))
+      unlinkSync(temp);
+    throw error;
+  }
+  return temp;
+}
+function atomicWrite(file, content, mode, beforeRename) {
+  const temp = writeTemp(file, content, mode);
+  try {
+    beforeRename?.();
+    renameSync(temp, file);
+  } catch (error) {
+    if (existsSync(temp))
+      unlinkSync(temp);
+    throw error;
+  }
+}
+
+// src/workflow/reviews.ts
+var START_KEPT_MS = 24 * 60 * 60 * 1000;
+var COMMIT_SHA = /^[0-9a-f]{40,64}$/;
+function repoKey(repo) {
+  return createHash("sha256").update(repo).digest("hex").slice(0, 16);
+}
+
 // src/hooks/git.ts
 var GIT_TIMED_OUT = "timed out";
-function runGit(cwd, args, env, timeoutMs = 15000, own = {}) {
-  return spawnGit(cwd, args, env, timeoutMs, own, true);
+function runGit(cwd, args, env, timeoutMs = 15000, own = {}, input) {
+  return spawnGit(cwd, args, env, timeoutMs, own, true, input);
 }
-function spawnGit(cwd, args, env, timeoutMs, own, trim) {
+function runGitRaw(cwd, args, env, timeoutMs = 15000, own = {}) {
+  return spawnGit(cwd, args, env, timeoutMs, own, false);
+}
+var PATHS_PER_GIT_CALL = 200;
+function pathBatches(paths) {
+  const batches = [];
+  for (let at = 0;at < paths.length; at += PATHS_PER_GIT_CALL) {
+    batches.push(paths.slice(at, at + PATHS_PER_GIT_CALL));
+  }
+  return batches;
+}
+function spawnGit(cwd, args, env, timeoutMs, own, trim, input) {
+  const bytes = input === undefined ? undefined : new TextEncoder().encode(input);
+  const run = spawnGitBytes(cwd, args, env, timeoutMs, own, bytes);
+  const out = new TextDecoder("utf-8", { ignoreBOM: true }).decode(run.out);
+  return { ...run, out: trim ? out.trim() : out };
+}
+function spawnGitBytes(cwd, args, env, timeoutMs, own, input) {
   try {
     const result = Bun.spawnSync(["git", ...args], {
       cwd,
       env: { ...gitEnv(env), ...own },
-      stdin: "ignore",
+      stdin: input ?? "ignore",
       stdout: "pipe",
       stderr: "pipe",
       timeout: timeoutMs,
@@ -21909,12 +22008,17 @@ function spawnGit(cwd, args, env, timeoutMs, own, trim) {
     });
     const err = result.signalCode ? GIT_TIMED_OUT : result.stderr.toString().trim();
     const code = result.signalCode ? null : result.exitCode;
-    const out = result.stdout.toString();
-    return { ok: result.exitCode === 0, out: trim ? out.trim() : out, err, code };
+    return { ok: result.exitCode === 0, out: result.stdout, err, code };
   } catch (error) {
     const err = error instanceof Error ? error.message : String(error);
-    return { ok: false, out: "", err, code: null };
+    return { ok: false, out: new Uint8Array, err, code: null };
   }
+}
+function commitArgs(rev) {
+  return ["rev-parse", "--verify", "--quiet", `${rev}^{commit}`];
+}
+function commitIn(run) {
+  return run.ok && COMMIT_SHA.test(run.out) ? run.out : null;
 }
 
 // src/project/config.ts
@@ -21959,75 +22063,6 @@ function withoutBom(text) {
 }
 function parseUserJson(text) {
   return JSON.parse(withoutBom(text));
-}
-
-// src/setup/write.ts
-import {
-  closeSync,
-  existsSync,
-  fsyncSync,
-  lstatSync,
-  mkdirSync,
-  openSync,
-  readdirSync,
-  readFileSync,
-  readlinkSync,
-  realpathSync,
-  renameSync,
-  statSync,
-  unlinkSync,
-  writeFileSync
-} from "fs";
-import { basename, dirname, join as join3, resolve } from "path";
-
-// src/setup/file-mode.ts
-import { chmodSync, fchmodSync } from "fs";
-function failureIsFatal(platform) {
-  return platform !== "win32";
-}
-function setFileMode(fileOrFd, mode, platform = hostPlatform()) {
-  try {
-    if (typeof fileOrFd === "number")
-      fchmodSync(fileOrFd, mode);
-    else
-      chmodSync(fileOrFd, mode);
-  } catch (error) {
-    if (failureIsFatal(platform))
-      throw error;
-  }
-}
-
-// src/setup/write.ts
-function writeTemp(file, content, mode) {
-  const dir = dirname(file);
-  mkdirSync(dir, { recursive: true });
-  const temp = join3(dir, `.${basename(file)}.cc-smart-dev-kit-tmp-${process.pid}-${crypto.randomUUID()}`);
-  try {
-    const fd = openSync(temp, "wx", mode);
-    try {
-      writeFileSync(fd, content);
-      fsyncSync(fd);
-    } finally {
-      closeSync(fd);
-    }
-    setFileMode(temp, mode);
-  } catch (error) {
-    if (existsSync(temp))
-      unlinkSync(temp);
-    throw error;
-  }
-  return temp;
-}
-function atomicWrite(file, content, mode, beforeRename) {
-  const temp = writeTemp(file, content, mode);
-  try {
-    beforeRename?.();
-    renameSync(temp, file);
-  } catch (error) {
-    if (existsSync(temp))
-      unlinkSync(temp);
-    throw error;
-  }
 }
 
 // src/setup/managed-json.ts
@@ -22079,6 +22114,14 @@ var INERT = new Set([
   "wc",
   "which"
 ]);
+
+// src/shell/quote.ts
+function shellQuote(value) {
+  return `'${value.replaceAll("'", "'\\''")}'`;
+}
+function shellWord(value) {
+  return /^[\w./-]+$/.test(value) ? value : shellQuote(value);
+}
 
 // src/shell/command.ts
 var MAX_NESTING = 3;
@@ -23488,6 +23531,7 @@ function normalizeMergeFile(raw) {
   };
   return { ok: false, why: why[parsed.problem] };
 }
+var MERGE_FILES_RULE = "plans.mergeFiles is a list of paths inside the repository, written with / (a folder ends in /), with no absolute path, no .. and not the root";
 var mergeFilesSchema = array(string2()).transform((paths, context) => {
   const normalised = [];
   for (const [index, raw] of paths.entries()) {
@@ -23510,6 +23554,7 @@ function normalizeAppendOnlyFolder(raw) {
     why: `${JSON.stringify(raw)} is not a folder: plans.appendOnly names folders, each ending in /`
   };
 }
+var APPEND_ONLY_RULE = "plans.appendOnly is a list of folders inside the repository, each written with / and ending in /, with no absolute path, no .. and not the root";
 var appendOnlySchema = array(string2()).transform((paths, context) => {
   const folders = [];
   for (const [index, raw] of paths.entries()) {
@@ -23710,6 +23755,65 @@ function workflowValue(workflow, key) {
   if (typeof group !== "object" || group === null)
     return;
   return group[tail];
+}
+function isNumberKey(key) {
+  return Object.hasOwn(NUMBER_RULES, key);
+}
+function numberRuleText(key) {
+  const rule = NUMBER_RULES[key];
+  return rule.max === undefined ? `${key} is a whole number, ${rule.min} or more` : `${key} is a whole number ${rule.min}-${rule.max}`;
+}
+function parseNumber(key, value) {
+  const rule = NUMBER_RULES[key];
+  const shape = /^\d+$/;
+  const number = Number(value);
+  return shape.test(value) && numberSchema(rule).safeParse(number).success ? { ok: true, value: number } : { ok: false, why: numberRuleText(key) };
+}
+function parsePathList(value, rule, normalize) {
+  const named = value.split(/[,\n]/).map((word) => word.trim()).filter((word) => word !== "");
+  if (named.length === 0)
+    return { ok: false, why: rule };
+  const paths = [];
+  for (const raw of named) {
+    const parsed = normalize(raw);
+    if (!parsed.ok)
+      return { ok: false, why: `${rule}; ${parsed.why}` };
+    if (!paths.includes(parsed.path))
+      paths.push(parsed.path);
+  }
+  return { ok: true, value: paths };
+}
+function parseWorkflowValue(key, text) {
+  const value = text.trim();
+  if (key === "openPr" || key === "mergeMethod") {
+    const words = key === "openPr" ? ["off", "draft", "ready"] : ["merge", "squash", "rebase"];
+    return words.includes(value) ? { ok: true, value } : { ok: false, why: `${key} is one of ${words.join(", ")}` };
+  }
+  if (isNumberKey(key))
+    return parseNumber(key, value);
+  if (key === "issues.foundLabel" || key === "issues.fixedLabel" || key === "issues.readyLabel") {
+    return isLabelName(value) ? { ok: true, value } : { ok: false, why: `${key} is ${LABEL_RULE}` };
+  }
+  if (key === "plans.runMode") {
+    return RUN_MODES.includes(value) ? { ok: true, value } : { ok: false, why: `${key} is one of ${RUN_MODES.join(", ")}` };
+  }
+  if (key === "plans.mergeFiles")
+    return parsePathList(value, MERGE_FILES_RULE, normalizeMergeFile);
+  if (key === "plans.appendOnly")
+    return parsePathList(value, APPEND_ONLY_RULE, normalizeAppendOnlyFolder);
+  if (key === "reviewAgents") {
+    const named = value.split(/[,\s]+/).map((word) => word.trim()).filter((word) => word !== "");
+    if (named.length === 0) {
+      return {
+        ok: false,
+        why: "reviewAgents is a list of agent types, like cc-smart-dev-kit:senior-engineer"
+      };
+    }
+    return { ok: true, value: [...new Set(named)] };
+  }
+  if (value === "true" || value === "false")
+    return { ok: true, value: value === "true" };
+  return { ok: false, why: `${key} is true or false` };
 }
 
 // src/project/config-facts.ts
@@ -24135,14 +24239,27 @@ function committedOf(text, where, options) {
   return {
     found: true,
     where,
-    config: parseCcSmartDevKitConfig(text.stdout, where, options.pluginVersion)
+    config: parseCcSmartDevKitConfig(text.stdout, where, options.pluginVersion),
+    text: text.stdout
   };
 }
-function readCommittedConfig(checkout, branch, options = {}) {
+function withoutText(read) {
+  if (!read.found)
+    return read;
+  return { found: true, config: read.config, where: read.where };
+}
+function readTarget(branch, options) {
   const ref = `origin/${branch}`;
-  const where = `${ref}:${CONFIG_PATH}`;
+  const at = options.commit ?? `refs/remotes/${ref}`;
+  return { at: `${at}^{commit}`, ref, where: `${ref}:${CONFIG_PATH}` };
+}
+function readCommittedConfig(checkout, branch, options = {}) {
+  return withoutText(readCommittedFile(checkout, branch, options));
+}
+function readCommittedFile(checkout, branch, options = {}) {
+  const { at, ref, where } = readTarget(branch, options);
   const git = gitIn(checkout.root, gitEnv(options.env ?? process.env), options.timeoutMs, options.timeFor);
-  const commit = git(["rev-parse", "--verify", "--quiet", `refs/remotes/${ref}^{commit}`]);
+  const commit = git(["rev-parse", "--verify", "--quiet", at]);
   if (!commit.ok)
     return refNotKnown(where, ref, commit);
   const blob = git(["rev-parse", "--verify", "--quiet", `${commit.stdout.trim()}:${CONFIG_PATH}`]);
@@ -24167,9 +24284,6 @@ var FIND_INSTALL_JS = [
   "if(!e)process.exit(1);",
   "process.stdout.write(e.installPath);"
 ].join("");
-
-// src/setup/lock.ts
-var FALLBACK_STALE_MS = 10 * 60 * 1000;
 
 // src/update/state.ts
 var CHECK_INTERVAL_MS = 60 * 60 * 1000;
@@ -24325,15 +24439,35 @@ function isFolderOnBase(checkout, base, path, options) {
 // src/tasks/context.ts
 import { realpathSync as realpathSync3 } from "fs";
 
-// src/workflow/reviews.ts
-import { createHash } from "crypto";
-var START_KEPT_MS = 24 * 60 * 60 * 1000;
-function repoKey(repo) {
-  return createHash("sha256").update(repo).digest("hex").slice(0, 16);
+// src/setup/installed-plugins.ts
+import { existsSync as existsSync5, readFileSync as readFileSync4 } from "fs";
+function pluginsRecord(installedPluginsFile) {
+  if (!existsSync5(installedPluginsFile))
+    return null;
+  let parsed;
+  try {
+    parsed = JSON.parse(readFileSync4(installedPluginsFile, "utf8"));
+  } catch {
+    return null;
+  }
+  const plugins = parsed?.plugins;
+  return typeof plugins === "object" && plugins !== null && !Array.isArray(plugins) ? plugins : null;
+}
+function findUserInstall(installedPluginsFile, pluginId = PLUGIN_ID) {
+  const entries = pluginsRecord(installedPluginsFile)?.[pluginId];
+  if (!Array.isArray(entries))
+    return null;
+  const entry = entries.find((candidate) => typeof candidate === "object" && candidate !== null && candidate.scope === "user" && typeof candidate.installPath === "string");
+  if (!entry)
+    return null;
+  return {
+    installPath: entry.installPath,
+    version: typeof entry.version === "string" ? entry.version : null
+  };
 }
 
 // src/tasks/deploy/files.ts
-import { existsSync as existsSync5, mkdirSync as mkdirSync2, readdirSync as readdirSync2, readFileSync as readFileSync4, rmSync, writeFileSync as writeFileSync2 } from "fs";
+import { existsSync as existsSync6, mkdirSync as mkdirSync2, readdirSync as readdirSync2, readFileSync as readFileSync5, rmSync, writeFileSync as writeFileSync2 } from "fs";
 import { basename as basename2, dirname as dirname2, isAbsolute as isAbsolute2, join as join5, relative, resolve as resolve2, sep as sep2 } from "path";
 var DEFAULT_TASKS_DIR = ".claude/tasks";
 function deployTasksDir(checkoutRoot, settings) {
@@ -24362,13 +24496,13 @@ function scanDeployTasks(dir, options) {
   const broken = [];
   for (const env of DEPLOY_ENVS) {
     for (const folder of options.archive ? [envFolder(dir, env), archiveFolder(dir, env)] : [envFolder(dir, env)]) {
-      if (!existsSync5(folder))
+      if (!existsSync6(folder))
         continue;
       for (const entry of readdirSync2(folder, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
         if (!entry.isFile() || !isTaskFile(entry.name))
           continue;
         const file = join5(folder, entry.name);
-        const result = parseDeployTask(readFileSync4(file, "utf8"), file, env);
+        const result = parseDeployTask(readFileSync5(file, "utf8"), file, env);
         if (result.ok)
           found.push(result.task);
         else
@@ -24412,7 +24546,7 @@ function newDeployId(env, now, used) {
 function takenDeployIds(dir, env) {
   const ids = new Set(scanDeployTasks(dir, { archive: true }).tasks.filter((task) => task.env === env).map((task) => task.id));
   for (const folder of [envFolder(dir, env), archiveFolder(dir, env)])
-    if (existsSync5(folder))
+    if (existsSync6(folder))
       for (const name of readdirSync2(folder)) {
         const id = deployIdOfFileName(name);
         if (id)
@@ -24454,7 +24588,7 @@ function claim2(dir, task, sources) {
     throw error;
   }
   const own = basename2(task.file);
-  const rival = [envFolder(dir, task.env), archiveFolder(dir, task.env)].filter((folder) => existsSync5(folder)).flatMap((folder) => readdirSync2(folder)).some((name) => name !== own && deployIdOfFileName(name) === task.id);
+  const rival = [envFolder(dir, task.env), archiveFolder(dir, task.env)].filter((folder) => existsSync6(folder)).flatMap((folder) => readdirSync2(folder)).some((name) => name !== own && deployIdOfFileName(name) === task.id);
   if (rival)
     rmSync(task.file, { force: true });
   return !rival;
@@ -24554,7 +24688,7 @@ function closeDeployTask(dir, id, options, now) {
   const archive = archiveFolder(dir, task.env);
   mkdirSync2(archive, { recursive: true });
   const destination = join5(archive, basename2(task.file));
-  if (destination !== task.file && existsSync5(destination))
+  if (destination !== task.file && existsSync6(destination))
     throw new Error(`Archive task already exists: ${destination}`);
   const saved = save({ ...closed, file: destination });
   if (destination !== task.file)
@@ -24622,7 +24756,12 @@ function contextOf(checkout, cwd, read) {
     config = (read ?? loadProjectConfig(checkout)).config;
   } catch (error) {
     const why = checkoutFailure(error);
-    return { ...base, projectTasks: { ok: false, why }, projectConfig: { ok: false, why } };
+    const requiresFile = error instanceof CcSmartDevKitVersionError ? projectFileFor(checkout) : null;
+    return {
+      ...base,
+      projectTasks: { ok: false, why },
+      projectConfig: { ok: false, why, requiresFile }
+    };
   }
   const settings = config?.tasks;
   const root = checkout.root;
@@ -24636,6 +24775,31 @@ function contextOf(checkout, cwd, read) {
       envs: settings?.envs ?? DEPLOY_ENVS
     }
   };
+}
+function taskWriteRefusal(read, env) {
+  if (read.ok)
+    return null;
+  const why = `Task writes are refused: ${read.why}`;
+  if (read.requiresFile === null)
+    return { why, fix: "Fix that file; task reads still answer." };
+  const installed = findUserInstall(cliPaths(env).installedPluginsFile)?.version ?? null;
+  if (installed !== null && installed !== VERSION && meetsRequires(read.requiresFile, installed))
+    return {
+      why,
+      fix: `The kit on disk (${installed}) already meets it: restart this session to load it.`
+    };
+  return {
+    why,
+    fix: installed === null ? "If the kit on disk already meets it, restart this session to load it; after an update, restart it too." : "After an update, restart this session to load it."
+  };
+}
+function meetsRequires(file, version) {
+  try {
+    loadCcSmartDevKitConfig(file, version);
+    return true;
+  } catch (error) {
+    return !(error instanceof CcSmartDevKitVersionError);
+  }
 }
 
 // src/worktrees/auto-state.ts
@@ -25050,6 +25214,9 @@ function searchTasks(db, project, text) {
 function notesOf(db, task) {
   return db.sqlite.query("SELECT id, task_id AS taskId,text,session_id AS sessionId,at FROM task_notes WHERE task_id=? ORDER BY id").all(typeof task === "string" ? task : task.id);
 }
+function holdsNoteStarting(db, task, start) {
+  return notesOf(db, task).some((note) => note.text.startsWith(start));
+}
 function eventsOf(db, task) {
   return db.sqlite.query("SELECT * FROM task_events WHERE task_id=? ORDER BY id").all(typeof task === "string" ? task : task.id).map((row) => ({
     id: row.id,
@@ -25092,7 +25259,7 @@ function claimState(task, process2, who) {
 
 // src/tasks/work/db.ts
 import { Database } from "bun:sqlite";
-import { chmodSync as chmodSync2, existsSync as existsSync6, mkdirSync as mkdirSync3, renameSync as renameSync2, rmSync as rmSync2, writeFileSync as writeFileSync3 } from "fs";
+import { chmodSync as chmodSync2, existsSync as existsSync7, mkdirSync as mkdirSync3, renameSync as renameSync2, rmSync as rmSync2, writeFileSync as writeFileSync3 } from "fs";
 import { dirname as dirname3, join as join6 } from "path";
 var WORK_SCHEMA_VERSION = 7;
 var LEGACY_LIFT_REASON = "lift legacy nested task";
@@ -25196,7 +25363,7 @@ function repairTaskLayers(sqlite, file) {
   let backed = false;
   const move = (row, parent, above) => {
     if (!backed) {
-      if (!existsSync6(`${file}.v4.bak`)) {
+      if (!existsSync7(`${file}.v4.bak`)) {
         try {
           writeFileSync3(`${file}.v4.bak.tmp`, sqlite.serialize(), { mode: 384 });
           renameSync2(`${file}.v4.bak.tmp`, `${file}.v4.bak`);
@@ -25258,7 +25425,7 @@ function repairTaskLayers(sqlite, file) {
 }
 function openWorkDb(file, options) {
   const hook = options.mode === "hook";
-  const fresh = !existsSync6(file);
+  const fresh = !existsSync7(file);
   if (hook && fresh)
     throw new Error("task store does not exist");
   if (!hook)
@@ -25441,12 +25608,12 @@ function indent(text) {
 }
 
 // src/hooks/sessions.ts
-import { existsSync as existsSync7, readdirSync as readdirSync3, readFileSync as readFileSync6, statSync as statSync3 } from "fs";
+import { existsSync as existsSync8, readdirSync as readdirSync3, readFileSync as readFileSync7, statSync as statSync3 } from "fs";
 import { uptime } from "os";
 import { join as join7 } from "path";
 
 // src/jobs/ancestry.ts
-import { readFileSync as readFileSync5 } from "fs";
+import { readFileSync as readFileSync6 } from "fs";
 var MAX_DEPTH = 128;
 function parentPidFromStat(stat) {
   const end = stat.lastIndexOf(")");
@@ -25478,7 +25645,7 @@ function ancestorPids(pid, readStat) {
 }
 function readProcStat(pid) {
   try {
-    return readFileSync5(`/proc/${String(pid)}/stat`, "utf8");
+    return readFileSync6(`/proc/${String(pid)}/stat`, "utf8");
   } catch {
     return null;
   }
@@ -25535,7 +25702,7 @@ function sessionRecordOf(claudeConfigDir, pid, facts = {}) {
   try {
     if (statSync3(file).mtimeMs < bootedAt)
       return null;
-    text = readFileSync6(file, "utf8");
+    text = readFileSync7(file, "utf8");
   } catch (error) {
     if (error.code === "ENOENT")
       return null;
@@ -25554,7 +25721,7 @@ function sessionRecordOf(claudeConfigDir, pid, facts = {}) {
 }
 function liveSessions(claudeConfigDir, facts = {}) {
   const dir = join7(claudeConfigDir, "sessions");
-  if (!existsSync7(dir))
+  if (!existsSync8(dir))
     return [];
   const live = [];
   for (const file of readdirSync3(dir)) {
@@ -25569,7 +25736,7 @@ function liveSessions(claudeConfigDir, facts = {}) {
 }
 
 // src/worktrees/machine-facts.ts
-import { readdirSync as readdirSync4, readFileSync as readFileSync7, readlinkSync as readlinkSync2 } from "fs";
+import { readdirSync as readdirSync4, readFileSync as readFileSync8, readlinkSync as readlinkSync2 } from "fs";
 import { platform } from "os";
 var PROGRAMS_TIMEOUT_MS = 15000;
 var PS_PROGRAMS_ARGV = ["ps", "-ww", "-axo", "pid=,ppid=,args="];
@@ -25829,6 +25996,110 @@ var CHECKED_FILE_MAX_BYTES = 256 * 1024;
 // src/hooks/worktree-leftovers.ts
 var REFLOG_TAIL_BYTES = 8 * 1024;
 
+// src/project/generated.ts
+import { mkdirSync as mkdirSync4, mkdtempSync, rmSync as rmSync3, writeFileSync as writeFileSync4 } from "fs";
+import { tmpdir } from "os";
+import { join as join8 } from "path";
+var GENERATED_ATTRIBUTE = "linguist-generated";
+var MARKED_VALUES = new Set(["set", "true"]);
+var SHA256_ID = /^[0-9a-f]{64}$/;
+function generatedIn(out) {
+  const fields = out.split("\x00");
+  const generated = [];
+  for (let index = 0;index + 2 < fields.length; index += 3) {
+    const path = fields[index] ?? "";
+    if (path !== "" && MARKED_VALUES.has(fields[index + 2] ?? ""))
+      generated.push(path);
+  }
+  return generated;
+}
+function committedHistory(none) {
+  return { GIT_NO_REPLACE_OBJECTS: "1", GIT_GRAFT_FILE: none, GIT_SHALLOW_FILE: none };
+}
+function openBaseOnlyGit(commonDir, source) {
+  const folder = mkdtempSync(join8(tmpdir(), `${COMMAND}-attributes-`));
+  const none = join8(folder, "none");
+  try {
+    mkdirSync4(join8(folder, "refs"));
+    mkdirSync4(join8(folder, "objects", "info"), { recursive: true });
+    mkdirSync4(join8(folder, "info"));
+    mkdirSync4(join8(folder, "tree"));
+    writeFileSync4(join8(folder, "info", "sparse-checkout"), `.gitattributes
+`);
+    writeFileSync4(join8(folder, "HEAD"), `ref: refs/heads/none
+`);
+    writeFileSync4(join8(folder, "objects", "info", "alternates"), `${join8(commonDir, "objects")}
+`);
+    if (SHA256_ID.test(source)) {
+      writeFileSync4(join8(folder, "config"), `[core]
+	repositoryformatversion = 1
+[extensions]
+	objectFormat = sha256
+`);
+    }
+  } catch (error) {
+    rmSync3(folder, { recursive: true, force: true });
+    throw error;
+  }
+  const args = (command) => [
+    "-c",
+    `core.attributesFile=${none}`,
+    "-c",
+    "core.ignoreCase=false",
+    ...command
+  ];
+  return {
+    cwd: join8(folder, "tree"),
+    env: {
+      GIT_DIR: folder,
+      GIT_WORK_TREE: join8(folder, "tree"),
+      GIT_INDEX_FILE: join8(folder, "index"),
+      GIT_CONFIG_GLOBAL: none,
+      GIT_CONFIG_NOSYSTEM: "1",
+      GIT_ATTR_NOSYSTEM: "1",
+      GIT_ATTR_SOURCE: source,
+      GIT_CONFIG_COUNT: "0",
+      GIT_CONFIG_PARAMETERS: "",
+      ...committedHistory(none)
+    },
+    args,
+    checks: (paths) => pathBatches(paths).map((batch) => args(["check-attr", `--source=${source}`, "-z", GENERATED_ATTRIBUTE, "--", ...batch])),
+    readBase: args([
+      "-c",
+      "core.sparseCheckout=true",
+      "-c",
+      "core.sparseCheckoutCone=false",
+      "read-tree",
+      "-m",
+      "-u",
+      source
+    ]),
+    remove: () => rmSync3(folder, { recursive: true, force: true })
+  };
+}
+function readGenerated(commonDir, source, paths, env, timeoutMs) {
+  if (paths.length === 0)
+    return new Set;
+  try {
+    const isolated = openBaseOnlyGit(commonDir, source);
+    try {
+      const marked = new Set;
+      for (const args of isolated.checks(paths)) {
+        const run = runGitRaw(isolated.cwd, args, env, timeoutMs, isolated.env);
+        if (!run.ok)
+          return null;
+        for (const path of generatedIn(run.out))
+          marked.add(path);
+      }
+      return marked;
+    } finally {
+      isolated.remove();
+    }
+  } catch {
+    return null;
+  }
+}
+
 // src/workflow/review-cover.ts
 function parseGitVersion(out) {
   const match = /git version (\d+)\.(\d+)(?:\.(\d+))?/.exec(out);
@@ -25858,23 +26129,689 @@ function baseBranch(checkout, env, repo) {
 }
 
 // src/tasks/files-check.ts
+import { createHash as createHash2 } from "crypto";
+
+// src/tasks/work/store.ts
+var NOTE_PREVIEW = 120;
+function shape(db, task) {
+  const numberOf = (id) => `#${taskById(db, id).number}`;
+  return {
+    subject: task.subject,
+    description: task.description,
+    status: task.status,
+    type: task.type,
+    plan: task.plan,
+    parent: task.parentId === null ? null : numberOf(task.parentId),
+    agent: task.agent,
+    branch: task.branch,
+    worktree: task.worktree,
+    base: task.base,
+    claim: task.claim === null ? null : claimText(task.claim),
+    waitsFor: task.waitsFor.map(numberOf).sort(),
+    files: task.files,
+    stackedOn: task.stackedOn,
+    lead: task.lead === null ? null : `${task.lead.sessionId ?? `process ${task.lead.pid}`} (${task.lead.holder})`
+  };
+}
+function diff(before, after) {
+  const changes = {};
+  for (const key of new Set([...Object.keys(before), ...Object.keys(after)])) {
+    if (!Bun.deepEquals(before[key], after[key]))
+      changes[key] = [before[key] ?? null, after[key] ?? null];
+  }
+  return changes;
+}
+function empty(key, value) {
+  return value === null || value === "" || Array.isArray(value) && value.length === 0 || key === "type" && value === "blocking";
+}
+function recordEvent(db, task, action, changes, who, now, reason) {
+  db.sqlite.query("INSERT INTO task_events(task_id,project,number,at,action,changes,session_id,session_name,pid,reason) VALUES (?,?,?,?,?,?,?,?,?,?)").run(task.id, task.project, task.number, now, action, JSON.stringify(changes), who.sessionId, who.name ?? null, who.pid, reason);
+}
+function recordChange(db, before, task, who, now, reason) {
+  const changes = diff(before, shape(db, task));
+  if (Object.keys(changes).length === 0)
+    return;
+  const closed = changes.status !== undefined && (task.status === "done" || task.status === "dropped");
+  recordEvent(db, task, closed ? "closed" : "changed", changes, who, now, reason);
+}
+function label(task) {
+  return `#${task.number} "${task.subject}"`;
+}
+function subjectOf(subject) {
+  const text = subject.trim();
+  if (!text || text.length > SUBJECT_LIMIT)
+    throw new Error(`subject must be 1\u2013${SUBJECT_LIMIT} characters`);
+  return text;
+}
+function descriptionOf(text) {
+  if (text.length > DESCRIPTION_LIMIT)
+    throw new Error(`description must be at most ${DESCRIPTION_LIMIT} characters`);
+  return text;
+}
+function newId(prefix = "w") {
+  const alphabet = "abcdefghijklmnopqrstuvwxyz234567";
+  return `${prefix}${Array.from(crypto.getRandomValues(new Uint8Array(10)), (v) => alphabet[v & 31]).join("")}`;
+}
+function placeValid(db, project, moving, parent, kind) {
+  if (moving !== null && parent === moving.parentId)
+    return;
+  if (moving !== null && moving.kind !== "task")
+    throw new Error(`${label(moving)} is a ${moving.kind}: ${moving.kind === "plan" ? "a plan stays at the top" : "a phase stays under its plan"}`);
+  if (!parent) {
+    if (kind === "phase")
+      throw new Error("a phase belongs under its plan");
+    return;
+  }
+  if (parent === moving?.id)
+    throw new Error("a task cannot be its own parent");
+  const target = taskById(db, parent);
+  if (target.project !== project)
+    throw new Error("parent belongs to another project");
+  if (moving && descendants(db, moving.id).some((t) => t.id === parent))
+    throw new Error("parent would make a cycle");
+  if (kind === "task" && target.kind === "plan" && moving !== null)
+    throw new Error(`a task waits under a plan only where it is made: create it with parent set to the plan (${TASK_TOOL.create}); an existing task moves under a phase`);
+  if (kind === "task" && target.kind !== "phase" && target.kind !== "plan")
+    throw new Error("a task belongs under a phase, under its plan while it waits for a phase, or at the top; a task holds no tasks");
+  if (kind === "phase" && target.kind !== "plan")
+    throw new Error("a phase belongs under its plan");
+  if (kind === "plan")
+    throw new Error("a plan belongs at the top");
+}
+function doneValid(db, task) {
+  const open = holdingUnder(allTasks(db, task.project), task.id);
+  if (open.length)
+    throw new Error(`open tasks: ${open.map((t) => `#${t.number} ${t.subject}`).join(", ")}`);
+}
+function unblockedValid(db, task) {
+  const open = openBlockers(task, new Map(allTasks(db, task.project).map((t) => [t.id, t])));
+  if (open.length)
+    throw new Error(`${label(task)} is blocked by ${open.map((t) => `${label(t)} (${t.status.replaceAll("_", " ")})`).join(", ")}: finish or drop ${open.length > 1 ? "them" : "it"} first, or remove the block`);
+}
+function addBlockers(db, task, refs) {
+  let graph = null;
+  for (const ref of refs) {
+    const other = taskById(db, ref);
+    if (other.project !== task.project)
+      throw new Error("dependency belongs to another project");
+    graph ??= new TaskGraph(allTasks(db, task.project));
+    const refusal = blockRefusal(graph, task, other);
+    if (refusal)
+      throw new Error(blockMessage(refusal, task, other));
+    db.sqlite.query("INSERT OR IGNORE INTO task_deps VALUES (?,?)").run(task.id, ref);
+    graph.addWait(task.id, ref);
+  }
+}
+function blockMessage(refusal, task, other) {
+  switch (refusal) {
+    case "under":
+      return `${label(task)} cannot be blocked by ${label(other)}: it sits under it, and a parent waits for its tasks`;
+    case "cycle":
+      return "blocked-by would make a cycle";
+    case "through":
+      return `${label(task)} cannot be blocked by ${label(other)}: ${label(other)} already waits for it, through what it is blocked by and the tasks a parent waits for, so neither could ever be done`;
+  }
+}
+function openPlanValid(tasks, plan) {
+  if (!planIsOpen(tasks, plan))
+    throw new Error(`Plan "${plan}" is closed: reopen it with task_update, or create a loose task (no plan).`);
+}
+function storeFiles(db, task, files) {
+  if (task.kind !== "plan")
+    throw new Error(`${label(task)} is a ${task.kind}: only a plan has a file list`);
+  const list = normalizePlanFiles(files);
+  db.sqlite.query("DELETE FROM task_files WHERE task_id=?").run(task.id);
+  for (const path of list)
+    db.sqlite.query("INSERT INTO task_files(task_id,path) VALUES (?,?)").run(task.id, path);
+}
+function storeStack(db, task, slug, who) {
+  if (task.kind !== "plan")
+    throw new Error(`${label(task)} is a ${task.kind}: only a plan is stacked on another plan`);
+  if (slug !== null) {
+    if (slug === task.plan)
+      throw new Error(`${label(task)} cannot be stacked on itself`);
+    const plans = new Map(allTasks(db, task.project).filter((t) => t.kind === "plan" && t.plan !== null).map((t) => [t.plan, t]));
+    const parent = plans.get(slug);
+    if (parent === undefined)
+      throw new Error(`Plan "${slug}" not found: stacked_on names a plan of this project`);
+    const leads = leadsPlan(who);
+    const foreign = [task, parent].filter((plan) => !leads(plan));
+    if (foreign.length > 0)
+      throw new Error(`${label(task)} cannot be stacked on "${slug}": ${foreign.map(label).join(" and ")} ${foreign.length > 1 ? "are" : "is"} not led by this session. A plan is stacked only on another plan of the same lead, whose branch it is built on`);
+    const chain = [slug];
+    for (let at = plans.get(slug)?.stackedOn ?? null;at !== null; ) {
+      if (at === task.plan)
+        throw new Error(`${label(task)} cannot be stacked on "${slug}": that would make a loop (${[task.plan, ...chain, at].join(" \u2192 ")})`);
+      if (chain.includes(at))
+        break;
+      chain.push(at);
+      at = plans.get(at)?.stackedOn ?? null;
+    }
+  }
+  db.sqlite.query("UPDATE tasks SET stacked_on=? WHERE id=?").run(slug, task.id);
+}
+function overlapsWith(plan, held, files, check) {
+  return held.map(({ plan: other, files: theirs }) => ({
+    plan,
+    other,
+    overlaps: filesOverlap(files, theirs, check),
+    lists: [files, theirs],
+    unlisted: null
+  })).filter((one) => one.overlaps.length > 0);
+}
+function heldOverlaps(db, task, who, check) {
+  if (check.found === undefined)
+    return;
+  const held = heldPlansIn(allTasks(db, task.project), who);
+  if (!held.some((h) => h.plan.id === task.id))
+    return;
+  const current = taskById(db, task.id);
+  check.found.push(...overlapsWith(current, rivalsOf(held, current, provedOf(check)), current.files, check));
+}
+function provedOf(check) {
+  return provedSet(check.stacked);
+}
+function flightOverlaps(db, plan, who, check) {
+  if (check.found === undefined)
+    return;
+  const row = taskById(db, plan.id);
+  const others = rivalsOf(heldPlansIn(allTasks(db, plan.project), who), row, provedOf(check));
+  if (row.files.length > 0) {
+    check.found.push(...overlapsWith(row, others, row.files, check));
+    return;
+  }
+  for (const held of others)
+    if (held.why === "reserved")
+      check.found.push({
+        plan: row,
+        other: held.plan,
+        overlaps: [],
+        lists: [[], []],
+        unlisted: row
+      });
+}
+function enteringPlan(db, task, status, plan) {
+  if (status !== "in_progress" || plan === null)
+    return null;
+  if (task.status === "in_progress" && task.plan === plan)
+    return null;
+  return planNotInFlight(db, task.project, plan);
+}
+function planNotInFlight(db, project, plan) {
+  const all = allTasks(db, project);
+  const row = all.find((t) => t.kind === "plan" && t.plan === plan);
+  return row === undefined || isInFlight(all, row) ? null : row;
+}
+function insertTask(db, input, who, now, reason = null) {
+  const subject = subjectOf(input.subject);
+  const description = descriptionOf(input.description ?? "");
+  placeValid(db, input.project, null, input.parentId ?? null, input.kind ?? "task");
+  const parentPlan = input.parentId ? taskById(db, input.parentId).plan : null;
+  const plan = input.plan ?? parentPlan;
+  if ((input.kind ?? "task") !== "plan" && plan !== null)
+    openPlanValid(allTasks(db, input.project), plan);
+  if (parentPlan !== null && parentPlan !== plan)
+    throw new Error("parent belongs to another plan");
+  const id = newId();
+  const number = db.sqlite.query("SELECT MAX(n)+1 AS n FROM (SELECT COALESCE(MAX(number),0) AS n FROM tasks WHERE project=? UNION ALL SELECT COALESCE(MAX(number),0) FROM task_events WHERE project=?)").get(input.project, input.project)?.n ?? 1;
+  const status = input.status ?? "pending";
+  const claimed = status === "in_progress" && who.pid !== null;
+  const starts = status === "in_progress" && reason === null;
+  const entering = starts && plan !== null && (input.kind ?? "task") !== "plan" ? planNotInFlight(db, input.project, plan) : null;
+  db.sqlite.query("INSERT INTO tasks(id,project,number,parent_id,kind,subject,description,status,plan,phase,agent,branch,worktree,base,created_by,created_pid,created_start,claim_pid,claim_start,claim_session,created_at,updated_at,closed_at,blocking) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)").run(id, input.project, number, input.parentId ?? null, input.kind ?? "task", subject, description, status, plan, input.phase ?? null, input.agent ?? null, input.branch ?? null, input.worktree ?? null, input.base ?? null, who.sessionId, who.pid, who.pid === null ? null : who.procStart, claimed ? who.pid : null, claimed ? who.procStart : null, claimed ? who.sessionId : null, now, now, status === "done" || status === "dropped" ? now : null, input.type === "non-blocking" ? 0 : 1);
+  addBlockers(db, taskById(db, id), input.blockedBy ?? []);
+  if (input.files !== undefined)
+    storeFiles(db, taskById(db, id), input.files);
+  const task = taskById(db, id);
+  if (status === "in_progress")
+    unblockedValid(db, task);
+  const joining = starts && task.kind === "plan" ? task : entering;
+  if (joining !== null && input.filesCheck !== undefined)
+    flightOverlaps(db, joining, who, input.filesCheck);
+  const initial = {
+    kind: task.kind,
+    plan: task.plan,
+    phase: task.phase,
+    ...shape(db, task)
+  };
+  const changes = {};
+  for (const [key, value] of Object.entries(initial))
+    if (!empty(key, value))
+      changes[key] = [null, value];
+  recordEvent(db, task, "created", changes, who, now, reason);
+  return task;
+}
+function dependencies(db, task, change) {
+  for (const ref of change.remove ?? [])
+    db.sqlite.query("DELETE FROM task_deps WHERE task_id=? AND waits_for=?").run(task.id, ref);
+  addBlockers(db, task, change.add ?? []);
+}
+function applyUpdate(db, id, change, who, now) {
+  const task = taskById(db, id);
+  const before = shape(db, task);
+  const status = change.status ?? task.status;
+  const parent = change.parentId === undefined ? task.parentId : change.parentId;
+  placeValid(db, task.project, task, parent, task.kind);
+  let plan = task.plan;
+  if (parent !== task.parentId && parent !== null) {
+    plan = taskById(db, parent).plan;
+    if (plan !== null)
+      openPlanValid(allTasks(db, task.project), plan);
+    if (task.parentId !== null && taskById(db, task.parentId).kind === "plan" && plan !== task.plan)
+      throw new Error(`${label(task)} waits in plan "${task.plan ?? ""}": move it under a phase of that plan`);
+  }
+  if (change.waitsFor)
+    dependencies(db, task, change.waitsFor);
+  if (status === "done" && task.status !== "done")
+    doneValid(db, task);
+  if ((status === "in_progress" || status === "done") && status !== task.status)
+    unblockedValid(db, taskById(db, id));
+  const claiming = status === "in_progress" && (change.status === "in_progress" || change.claim === true);
+  const claim = change.claim === false || status !== "in_progress" ? null : claiming ? who.pid === null ? null : { pid: who.pid, procStart: who.procStart, sessionId: who.sessionId } : task.claim;
+  const entering = enteringPlan(db, task, status, plan);
+  db.sqlite.query("UPDATE tasks SET subject=?,description=?,status=?,parent_id=?,plan=?,claim_pid=?,claim_start=?,claim_session=?,updated_at=?,closed_at=?,blocking=?,agent=?,branch=?,worktree=?,base=? WHERE id=?").run(change.subject === undefined ? task.subject : subjectOf(change.subject), descriptionOf(change.description ?? task.description), status, parent, plan, claim?.pid ?? null, claim?.procStart ?? null, claim?.sessionId ?? null, now, status === "done" || status === "dropped" ? task.closedAt ?? now : null, (change.type ?? task.type) === "non-blocking" ? 0 : 1, change.agent ?? task.agent, change.branch ?? task.branch, change.worktree ?? task.worktree, change.base ?? task.base, id);
+  if (status === "dropped" && task.kind === "plan")
+    clearLead(db, id);
+  const check = change.filesCheck;
+  if (change.files !== undefined)
+    storeFiles(db, task, change.files);
+  if (change.stackedOn !== undefined)
+    storeStack(db, task, change.stackedOn, who);
+  if (check !== undefined && (change.files !== undefined || change.stackedOn !== undefined))
+    heldOverlaps(db, task, who, check);
+  if (check !== undefined && entering !== null)
+    flightOverlaps(db, entering, who, check);
+  const changed = taskById(db, id);
+  recordChange(db, before, changed, who, now, null);
+  return changed;
+}
+function insertNote(db, id, text, who, now, reason = null) {
+  const note = saveNote(db, id, text, who, now, reason);
+  db.sqlite.query("UPDATE tasks SET updated_at=? WHERE id=?").run(now, id);
+  return note;
+}
+function saveNote(db, id, text, who, now, reason) {
+  const task = taskById(db, id);
+  if (!text.trim() || text.length > NOTE_LIMIT)
+    throw new Error(`note must be 1\u2013${NOTE_LIMIT} characters`);
+  const row = db.sqlite.query("INSERT INTO task_notes(task_id,text,session_id,at) VALUES (?,?,?,?) RETURNING id").get(id, text, who.sessionId, now);
+  const preview = text.length > NOTE_PREVIEW ? `${text.slice(0, NOTE_PREVIEW)}\u2026` : text;
+  recordEvent(db, task, "noted", { note: [null, preview] }, who, now, reason);
+  return {
+    id: row?.id ?? 0,
+    taskId: id,
+    text,
+    sessionId: who.sessionId,
+    at: now
+  };
+}
+var OVERLAP_NOTE_REASON = "the overlap warning";
+function addNotesOnce(db, notes, who, now) {
+  return writeWork(db, () => {
+    let saved = 0;
+    for (const note of notes)
+      for (const id of note.taskIds) {
+        if (holdsNoteStarting(db, id, `${note.head} `))
+          continue;
+        saveNote(db, id, note.text, who, now, OVERLAP_NOTE_REASON);
+        saved += 1;
+      }
+    return saved;
+  });
+}
+function deleteTask(db, id, who, now) {
+  return writeWork(db, () => {
+    const task = taskById(db, id);
+    if (db.sqlite.query("SELECT 1 FROM tasks WHERE parent_id=?").get(id))
+      throw new Error("task has tasks");
+    const kept = db.sqlite.query("SELECT 1 FROM task_notes AS note WHERE note.task_id=? AND NOT (substr(note.text,1,length(?))=? AND EXISTS (SELECT 1 FROM task_events AS event WHERE event.task_id=note.task_id AND event.action='noted' AND event.at=note.at AND event.session_id IS note.session_id AND event.reason=?))").get(id, OVERLAP_NOTE, OVERLAP_NOTE, OVERLAP_NOTE_REASON);
+    if (kept)
+      throw new Error("task has notes");
+    const stacked = task.kind === "plan" ? allTasks(db, task.project).filter((t) => t.kind === "plan" && t.stackedOn === task.plan) : [];
+    if (stacked.length > 0)
+      throw new Error(`${stacked.map(label).join(", ")} ${stacked.length > 1 ? "are" : "is"} stacked on it: clear that first (${TASK_TOOL.update} with stacked_on null)`);
+    const last = {};
+    for (const [key, value] of Object.entries(shape(db, task)))
+      if (!empty(key, value))
+        last[key] = [value, null];
+    db.sqlite.query("DELETE FROM task_notes WHERE task_id=?").run(id);
+    db.sqlite.query("DELETE FROM tasks WHERE id=?").run(id);
+    recordEvent(db, task, "deleted", last, who, now, null);
+    return true;
+  });
+}
+function planTask(db, input, who, now) {
+  return allTasks(db, input.project).find((t) => t.kind === "plan" && t.plan === input.plan) ?? insertTask(db, { ...input, kind: "plan" }, who, now);
+}
+var CAP_ORIGIN = {
+  project: "this project's workflow settings",
+  personal: "your own workflow settings",
+  default: "the built-in default"
+};
+function refuseOverCap(tasks, plan, cap) {
+  const count = livePhaseCount(tasks, plan);
+  if (count < cap.max)
+    return;
+  throw new Error(`Plan "${plan}" already holds ${count} phases, the most plans.maxPhases allows (${cap.max}, from ${CAP_ORIGIN[cap.source]}). Do not add a phase: add the work as a task under the phase that owns its files (${TASK_TOOL.create} with that phase as parent), or queue it as a task under the next plan (${TASK_TOOL.create} with parent set to that plan's #n; make the plan first with ${TASK_TOOL.create}, plan and a subject). Only the person raises the cap: ask them to run \`${COMMAND} workflow set plans.maxPhases <n>\` in their own terminal (add --project to set it for this project).`);
+}
+function layPhase(db, input, who, now) {
+  const tasks = allTasks(db, input.project);
+  if (tasks.some((task) => task.plan === input.plan))
+    openPlanValid(tasks, input.plan);
+  const there = tasks.find((t) => t.kind === "phase" && t.plan === input.plan && t.phase === input.phase);
+  if (there)
+    return { task: there, made: false };
+  if (input.cap !== undefined)
+    refuseOverCap(tasks, input.plan, input.cap);
+  const parent = planTask(db, { project: input.project, plan: input.plan, subject: input.plan }, who, now);
+  const task = insertTask(db, {
+    project: input.project,
+    subject: input.subject,
+    kind: "phase",
+    parentId: parent.id,
+    plan: input.plan,
+    phase: input.phase,
+    agent: input.agent,
+    branch: input.branch,
+    worktree: input.worktree,
+    base: input.base,
+    ...input.description === undefined ? {} : { description: input.description },
+    ...input.type === undefined ? {} : { type: input.type },
+    ...input.blockedBy === undefined ? {} : { blockedBy: input.blockedBy }
+  }, who, now);
+  return { task, made: true };
+}
+function reservationNamed(db, target, who, options) {
+  const plan = target.kind === "plan" ? target : target.plan === null ? undefined : allTasks(db, target.project).find((t) => t.kind === "plan" && t.plan === target.plan);
+  if (plan === undefined || plan.lead === null)
+    return null;
+  const { from } = options;
+  if (from !== undefined && (from === plan.lead.handoutId || from === plan.lead.sessionId))
+    return plan.lead;
+  if (options.force || ownerOf(who)(plan))
+    return null;
+  throw new Error(`${label(plan)} is reserved for session ${plan.lead.sessionId ?? `process ${plan.lead.pid}`}: take it with from set to the hand-out id its brief names`);
+}
+function takeTasks(db, project, id, who, now, options) {
+  return writeWork(db, () => {
+    if (!who.sessionId)
+      throw new Error("take needs a resolvable calling session");
+    const target = taskById(db, id);
+    if (target.project !== project)
+      throw new Error("task belongs to another project");
+    if (target.kind === "phase")
+      throw new Error("take a plan or one task, not a phase");
+    const rows = target.kind === "plan" ? allTasks(db, project).filter((t) => t.plan === target.plan) : [target];
+    const reservation = reservationNamed(db, target, who, options);
+    const lead = reservation === null ? null : {
+      sessionId: reservation.sessionId,
+      pid: reservation.pid,
+      procStart: reservation.procStart
+    };
+    const isEnded = options.isEnded ?? (() => false);
+    const leadsOwn = (task) => lead !== null && (task.createdBy === lead.sessionId || claimHeldBy(task.creator, lead) || task.creator !== null && isEnded(task.creator));
+    for (const task of rows) {
+      if (options.from !== undefined && (task.status === "pending" || task.status === "in_progress") && task.createdBy !== null && task.createdBy !== who.sessionId && task.createdBy !== options.from && !leadsOwn(task))
+        throw new Error(`${label(task)} belongs to session ${task.createdBy ?? "unknown"}, not ${options.from}`);
+      if (task.claim && options.isLive(task.claim) && !options.force && !claimHeldBy(task.claim, who))
+        throw new Error(`${label(task)} is live in session ${task.claim.sessionId ?? task.createdBy ?? "unknown"}; use force to take it`);
+    }
+    for (const task of rows) {
+      db.sqlite.query("UPDATE tasks SET created_by=?,created_pid=?,created_start=?,claim_pid=CASE WHEN claim_pid IS NULL THEN NULL ELSE ? END,claim_start=CASE WHEN claim_pid IS NULL THEN NULL ELSE ? END,claim_session=CASE WHEN claim_pid IS NULL THEN NULL ELSE ? END,updated_at=? WHERE id=?").run(who.sessionId, who.pid, who.pid === null ? null : who.procStart, who.pid, who.pid === null ? null : who.procStart, who.pid === null ? null : who.sessionId, now, task.id);
+      recordEvent(db, task, "changed", {
+        createdBy: [task.createdBy, who.sessionId],
+        creator: [
+          task.creator === null ? null : `process ${task.creator.pid}`,
+          who.pid === null ? null : `process ${who.pid}`
+        ],
+        ...task.claim === null ? {} : {
+          claim: [
+            claimText(task.claim),
+            who.pid === null ? null : claimText({ pid: who.pid, sessionId: who.sessionId })
+          ]
+        }
+      }, who, now, options.force ? "forced take-over" : "take-over");
+    }
+    return rows.map((t) => taskById(db, t.id));
+  });
+}
+function clearLead(db, id) {
+  db.sqlite.query("UPDATE tasks SET lead_session=NULL,lead_pid=NULL,lead_start=NULL,lead_child=0,lead_handout=NULL WHERE id=?").run(id);
+}
+function restampsOf(all, who, isGone) {
+  if (who.pid === null || who.sessionId === null)
+    return [];
+  const found = [];
+  for (const task of all) {
+    let claim;
+    if (task.status === "in_progress" && task.claim !== null) {
+      if (resumedClaim(task.claim, who, isGone))
+        claim = "moved";
+      else if (claimHeldBy(task.claim, who) && task.claim.sessionId !== who.sessionId)
+        claim = "session";
+    }
+    const createdBy = isOpen(task) && claimHeldBy(task.creator, who) && task.createdBy !== who.sessionId;
+    const creator = isOpen(task) && resumedClaim(task.creator, who, isGone);
+    let lead;
+    const leadClaim = task.lead === null ? null : leadProcess(task.lead);
+    if (task.lead !== null && leadClaim !== null) {
+      if (resumedClaim(leadClaim, who, isGone))
+        lead = "moved";
+      else if (claimHeldBy(leadClaim, who) && task.lead.sessionId !== who.sessionId)
+        lead = "session";
+    }
+    if (claim !== undefined || createdBy || creator || lead !== undefined)
+      found.push({
+        task,
+        ...claim === undefined ? {} : { claim },
+        createdBy,
+        creator,
+        ...lead === undefined ? {} : { lead }
+      });
+  }
+  return found;
+}
+function restampsEverywhere(db, who, isGone) {
+  if (who.pid === null || who.sessionId === null)
+    return [];
+  const projects = db.sqlite.query("SELECT DISTINCT project FROM tasks WHERE (status IN ('pending','in_progress') AND (claim_pid=? OR claim_session=? OR created_pid=? OR created_by=?)) OR lead_pid=? OR lead_session=? ORDER BY project").all(who.pid, who.sessionId, who.pid, who.sessionId, who.pid, who.sessionId);
+  return projects.flatMap(({ project }) => restampsOf(allTasks(db, project), who, isGone));
+}
+function reclaimResumed(db, who, now, isGone) {
+  let found;
+  try {
+    found = restampsEverywhere(db, who, isGone);
+  } catch (error) {
+    return { ok: false, why: error instanceof Error ? error.message : String(error) };
+  }
+  if (found.length === 0)
+    return { ok: true, value: 0 };
+  return writeWork(db, () => {
+    const rows = restampsEverywhere(db, who, isGone);
+    for (const { task, claim, createdBy, creator, lead } of rows) {
+      if (creator) {
+        db.sqlite.query("UPDATE tasks SET created_pid=?,created_start=?,updated_at=? WHERE id=?").run(who.pid, who.procStart, now, task.id);
+        recordEvent(db, task, "changed", { creator: [`process ${task.creator?.pid}`, `process ${who.pid}`] }, who, now, "maker moved to the resumed session's process");
+      }
+      if (claim === "moved") {
+        db.sqlite.query("UPDATE tasks SET claim_pid=?,claim_start=?,claim_session=?,updated_at=? WHERE id=?").run(who.pid, who.procStart, who.sessionId, now, task.id);
+        recordEvent(db, task, "changed", { claim: [`process ${task.claim?.pid}`, `process ${who.pid}`] }, who, now, "claim moved to the resumed session's process");
+      } else if (claim === "session") {
+        db.sqlite.query("UPDATE tasks SET claim_session=?,updated_at=? WHERE id=?").run(who.sessionId, now, task.id);
+        recordEvent(db, task, "changed", { claim: [task.claim === null ? null : claimText(task.claim), who.sessionId] }, who, now, "claim follows the session id its process now runs under");
+      }
+      if (createdBy) {
+        db.sqlite.query("UPDATE tasks SET created_by=?,updated_at=? WHERE id=?").run(who.sessionId, now, task.id);
+        recordEvent(db, task, "changed", { createdBy: [task.createdBy, who.sessionId] }, who, now, "made-by session follows the session id its process now runs under");
+      }
+      if (lead === "moved") {
+        db.sqlite.query("UPDATE tasks SET lead_pid=?,lead_start=?,updated_at=? WHERE id=?").run(who.pid, who.procStart, now, task.id);
+        recordEvent(db, task, "changed", { lead: [`process ${task.lead?.pid}`, `process ${who.pid}`] }, who, now, "lead moved to the resumed session's process");
+      } else if (lead === "session") {
+        db.sqlite.query("UPDATE tasks SET lead_session=?,updated_at=? WHERE id=?").run(who.sessionId, now, task.id);
+        recordEvent(db, task, "changed", { lead: [task.lead?.sessionId ?? `process ${task.lead?.pid}`, who.sessionId] }, who, now, "lead follows the session id its process now runs under");
+      }
+    }
+    return rows.length;
+  });
+}
+
+// src/tasks/files-check.ts
 function planFilesCheck(cwd, env = process.env) {
   const checkout = locateCheckout(cwd, { env });
   if (checkout === null)
     return { ignore: [], appendOnly: [], caseFold: false, reason: null };
-  const committed = resolvePlanFiles(checkout, baseBranch(checkout, env, checkout.root).base, {
-    env
-  });
+  const base = baseBranch(checkout, env, checkout.root).base;
+  const committed = resolvePlanFiles(checkout, base, { env });
   return {
     ignore: committed.files,
     appendOnly: committed.appendOnly,
     caseFold: ignoresCase(checkout.root, env),
-    reason: committed.reason
+    reason: committed.reason,
+    generated: (paths) => baseGenerated(checkout, base, paths, env)
   };
 }
 function ignoresCase(root, env = process.env) {
   const ignorecase = runGit(root, ["config", "--type=bool", "core.ignorecase"], env);
   return ignorecase.ok && ignorecase.out === "true";
+}
+function baseGenerated(checkout, base, paths, env) {
+  const ref = `origin/${base}`;
+  const commit = commitIn(runGit(checkout.root, commitArgs(`refs/remotes/${ref}`), env));
+  if (commit === null)
+    return null;
+  const files = new Set(paths.filter((path) => !path.endsWith("/")));
+  const folders = paths.filter((path) => path.endsWith("/"));
+  if (folders.length > 0) {
+    const listed = runGitRaw(checkout.root, ["ls-tree", "-r", "-z", "--name-only", commit, "--", ...folders], env);
+    if (!listed.ok)
+      return null;
+    for (const path of listed.out.split("\x00"))
+      if (path !== "")
+        files.add(path);
+  }
+  const marked = readGenerated(checkout.commonDir, commit, [...files], env);
+  return marked === null ? null : { ref, files: [...marked].sort() };
+}
+var NOTE_LIST_CHARS = 2000;
+function cappedList(items) {
+  let shown = 0;
+  let size = 0;
+  for (const item of items) {
+    if (shown > 0 && size + item.length > NOTE_LIST_CHARS)
+      break;
+    shown += 1;
+    size += item.length + 2;
+  }
+  const listed = items.slice(0, shown).join(", ");
+  return shown < items.length ? `${listed} and ${items.length - shown} more` : listed;
+}
+function sharedPath(overlap) {
+  return overlap.path.length >= overlap.other.length ? overlap.path : overlap.other;
+}
+function leadWords(plan) {
+  const lead = planLead(plan);
+  if (lead?.sessionId)
+    return `#${plan.number} session ${lead.sessionId}`;
+  return lead?.pid ? `#${plan.number} process ${lead.pid}` : null;
+}
+function sharedPaths(plan, other, overlaps) {
+  const flip = plan.number > other.number;
+  const shown = overlaps.map(({ path, other: theirs }) => {
+    const [mine, them] = flip ? [theirs, path] : [path, theirs];
+    return mine === them ? mine : `${mine} (${them})`;
+  });
+  return [...new Set(shown)].sort();
+}
+function overlapSummary(plan, other, overlaps, name = label) {
+  const [low, high] = plan.number > other.number ? [other, plan] : [plan, other];
+  return `${name(low)} and ${name(high)} share ${cappedList(sharedPaths(plan, other, overlaps))}`;
+}
+function finishedWords(name) {
+  return `${name} is finished and holds its files until its pull request merges or closes; \`${COMMAND} herdr plans\` then releases them`;
+}
+function unlistedWords(name) {
+  return `${name} has no file list, so no overlap with it can be ruled out`;
+}
+function unlistedFix(plan) {
+  return `${TASK_TOOL.update} #${plan.number} with files: the paths and folders it changes`;
+}
+function proposeCarries(paths) {
+  const parsed = parseWorkflowValue("plans.mergeFiles", paths.join(","));
+  return parsed.ok && Array.isArray(parsed.value) && parsed.value.length === paths.length && parsed.value.every((path, n) => path === paths[n]);
+}
+function generatedWords(overlap, marks, generated, check) {
+  const named = `${marks.ref} marks ${cappedList(generated)} generated`;
+  if (check.reason)
+    return `${named}; no propose line, since the current plans.mergeFiles is not known in full.`;
+  const proposed = [...new Set([...check.ignore, ...generated])];
+  const left = filesOverlap(...overlap.lists, { ...check, ignore: proposed }).map(sharedPath);
+  const folders = left.filter((path) => generated.some((file) => settledBy([path], file)));
+  if (folders.length > 0)
+    return `${named}, but a merge file does not settle a folder both plans list (${cappedList([...new Set(folders)].sort())}): narrow that folder entry to the files the plan changes, or put the folder itself in plans.mergeFiles.`;
+  if (!proposeCarries(proposed))
+    return `${named}, but the propose value cannot carry ${cappedList(proposed.filter((path) => !proposeCarries([path])))} as it is: list them in plans.mergeFiles by hand.`;
+  const list = proposed.join(",");
+  if (list.length > NOTE_LIST_CHARS)
+    return `${named}: too many for one propose line, so put the folder that holds them in plans.mergeFiles.`;
+  return `${named}: \`${COMMAND} workflow propose plans.mergeFiles ${shellWord(list)}\` opens the pull request that leaves them out of every overlap once the person merges it.`;
+}
+function overlapNote(overlap, marks, check) {
+  const paths = sharedPaths(overlap.plan, overlap.other, overlap.overlaps);
+  const key = cappedList(paths) === paths.join(", ") ? "" : ` (path set ${createHash2("sha256").update(paths.join(`
+`)).digest("hex").slice(0, 12)})`;
+  const head = `${OVERLAP_NOTE} ${overlapSummary(overlap.plan, overlap.other, overlap.overlaps)}${key}.`;
+  const pair = [overlap.plan, overlap.other].sort((a, b) => a.number - b.number);
+  const leads = pair.map(leadWords).filter((words) => words !== null);
+  const settling = pair.filter((plan) => plan.status === "done").map((plan) => `${finishedWords(label(plan))}.`);
+  const parts = [
+    head,
+    ...leads.length > 0 ? [`Leads: ${leads.join("; ")}.`] : [],
+    ...settling,
+    `Both may run at once; the plan that merges second catches up (\`/${PLUGIN}:build\` \xA7 6, An overlapping plan).`
+  ];
+  if (check.reason)
+    parts.push(`plans.mergeFiles was not read in full, so a merge file may count: ${check.reason}.`);
+  const regions = overlap.overlaps.map(sharedPath);
+  const generated = marks === null ? [] : marks.files.filter((file) => settledBy(regions, file));
+  if (marks !== null && generated.length > 0)
+    parts.push(generatedWords(overlap, marks, generated, check));
+  return { head, text: parts.join(" ") };
+}
+function unlistedLine({ plan, other }, unlisted) {
+  const rival = unlisted.id === plan.id ? other : plan;
+  return `Overlap unknown with ${label(rival)}: ${unlistedWords(label(unlisted))}; ${unlistedFix(unlisted)}.`;
+}
+function warnOverlaps(db, found, check, who, now) {
+  const regions = [...new Set(found.flatMap((overlap) => overlap.overlaps.map(sharedPath)))].sort();
+  const lines = [];
+  let marks = null;
+  if (regions.length > 0 && check.generated)
+    try {
+      marks = check.generated(regions);
+    } catch (error) {
+      lines.push(`The generated files could not be read: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  const notes = [];
+  for (const overlap of found) {
+    if (overlap.unlisted !== null) {
+      const line = unlistedLine(overlap, overlap.unlisted);
+      if (!lines.includes(line))
+        lines.push(line);
+      continue;
+    }
+    const note = overlapNote(overlap, marks, check);
+    if (notes.some((one) => one.head === note.head))
+      continue;
+    notes.push({ taskIds: [overlap.plan.id, overlap.other.id], ...note });
+    lines.push(note.text);
+  }
+  if (notes.length > 0) {
+    const saved = addNotesOnce(db, notes, who, now);
+    if (!saved.ok)
+      lines.push(`The ${OVERLAP_NOTE} notes were not saved: ${saved.why}`);
+  }
+  return lines;
 }
 
 // src/tasks/plan-guards.ts
@@ -26174,520 +27111,6 @@ function provedPairs(judged) {
   return [...judged.values()].filter((one) => one.verdict.proved).map((one) => one.pair);
 }
 
-// src/tasks/work/store.ts
-var NOTE_PREVIEW = 120;
-function shape(db, task) {
-  const numberOf = (id) => `#${taskById(db, id).number}`;
-  return {
-    subject: task.subject,
-    description: task.description,
-    status: task.status,
-    type: task.type,
-    plan: task.plan,
-    parent: task.parentId === null ? null : numberOf(task.parentId),
-    agent: task.agent,
-    branch: task.branch,
-    worktree: task.worktree,
-    base: task.base,
-    claim: task.claim === null ? null : claimText(task.claim),
-    waitsFor: task.waitsFor.map(numberOf).sort(),
-    files: task.files,
-    stackedOn: task.stackedOn,
-    lead: task.lead === null ? null : `${task.lead.sessionId ?? `process ${task.lead.pid}`} (${task.lead.holder})`
-  };
-}
-function diff(before, after) {
-  const changes = {};
-  for (const key of new Set([...Object.keys(before), ...Object.keys(after)])) {
-    if (!Bun.deepEquals(before[key], after[key]))
-      changes[key] = [before[key] ?? null, after[key] ?? null];
-  }
-  return changes;
-}
-function empty(key, value) {
-  return value === null || value === "" || Array.isArray(value) && value.length === 0 || key === "type" && value === "blocking";
-}
-function recordEvent(db, task, action, changes, who, now, reason) {
-  db.sqlite.query("INSERT INTO task_events(task_id,project,number,at,action,changes,session_id,session_name,pid,reason) VALUES (?,?,?,?,?,?,?,?,?,?)").run(task.id, task.project, task.number, now, action, JSON.stringify(changes), who.sessionId, who.name ?? null, who.pid, reason);
-}
-function recordChange(db, before, task, who, now, reason) {
-  const changes = diff(before, shape(db, task));
-  if (Object.keys(changes).length === 0)
-    return;
-  const closed = changes.status !== undefined && (task.status === "done" || task.status === "dropped");
-  recordEvent(db, task, closed ? "closed" : "changed", changes, who, now, reason);
-}
-function label(task) {
-  return `#${task.number} "${task.subject}"`;
-}
-function subjectOf(subject) {
-  const text = subject.trim();
-  if (!text || text.length > SUBJECT_LIMIT)
-    throw new Error(`subject must be 1\u2013${SUBJECT_LIMIT} characters`);
-  return text;
-}
-function descriptionOf(text) {
-  if (text.length > DESCRIPTION_LIMIT)
-    throw new Error(`description must be at most ${DESCRIPTION_LIMIT} characters`);
-  return text;
-}
-function newId(prefix = "w") {
-  const alphabet = "abcdefghijklmnopqrstuvwxyz234567";
-  return `${prefix}${Array.from(crypto.getRandomValues(new Uint8Array(10)), (v) => alphabet[v & 31]).join("")}`;
-}
-function placeValid(db, project, moving, parent, kind) {
-  if (moving !== null && parent === moving.parentId)
-    return;
-  if (moving !== null && moving.kind !== "task")
-    throw new Error(`${label(moving)} is a ${moving.kind}: ${moving.kind === "plan" ? "a plan stays at the top" : "a phase stays under its plan"}`);
-  if (!parent) {
-    if (kind === "phase")
-      throw new Error("a phase belongs under its plan");
-    return;
-  }
-  if (parent === moving?.id)
-    throw new Error("a task cannot be its own parent");
-  const target = taskById(db, parent);
-  if (target.project !== project)
-    throw new Error("parent belongs to another project");
-  if (moving && descendants(db, moving.id).some((t) => t.id === parent))
-    throw new Error("parent would make a cycle");
-  if (kind === "task" && target.kind === "plan" && moving !== null)
-    throw new Error(`a task waits under a plan only where it is made: create it with parent set to the plan (${TASK_TOOL.create}); an existing task moves under a phase`);
-  if (kind === "task" && target.kind !== "phase" && target.kind !== "plan")
-    throw new Error("a task belongs under a phase, under its plan while it waits for a phase, or at the top; a task holds no tasks");
-  if (kind === "phase" && target.kind !== "plan")
-    throw new Error("a phase belongs under its plan");
-  if (kind === "plan")
-    throw new Error("a plan belongs at the top");
-}
-function doneValid(db, task) {
-  const open = holdingUnder(allTasks(db, task.project), task.id);
-  if (open.length)
-    throw new Error(`open tasks: ${open.map((t) => `#${t.number} ${t.subject}`).join(", ")}`);
-}
-function unblockedValid(db, task) {
-  const open = openBlockers(task, new Map(allTasks(db, task.project).map((t) => [t.id, t])));
-  if (open.length)
-    throw new Error(`${label(task)} is blocked by ${open.map((t) => `${label(t)} (${t.status.replaceAll("_", " ")})`).join(", ")}: finish or drop ${open.length > 1 ? "them" : "it"} first, or remove the block`);
-}
-function addBlockers(db, task, refs) {
-  let graph = null;
-  for (const ref of refs) {
-    const other = taskById(db, ref);
-    if (other.project !== task.project)
-      throw new Error("dependency belongs to another project");
-    graph ??= new TaskGraph(allTasks(db, task.project));
-    const refusal = blockRefusal(graph, task, other);
-    if (refusal)
-      throw new Error(blockMessage(refusal, task, other));
-    db.sqlite.query("INSERT OR IGNORE INTO task_deps VALUES (?,?)").run(task.id, ref);
-    graph.addWait(task.id, ref);
-  }
-}
-function blockMessage(refusal, task, other) {
-  switch (refusal) {
-    case "under":
-      return `${label(task)} cannot be blocked by ${label(other)}: it sits under it, and a parent waits for its tasks`;
-    case "cycle":
-      return "blocked-by would make a cycle";
-    case "through":
-      return `${label(task)} cannot be blocked by ${label(other)}: ${label(other)} already waits for it, through what it is blocked by and the tasks a parent waits for, so neither could ever be done`;
-  }
-}
-function openPlanValid(tasks, plan) {
-  if (!planIsOpen(tasks, plan))
-    throw new Error(`Plan "${plan}" is closed: reopen it with task_update, or create a loose task (no plan).`);
-}
-function storeFiles(db, task, files) {
-  if (task.kind !== "plan")
-    throw new Error(`${label(task)} is a ${task.kind}: only a plan has a file list`);
-  const list = normalizePlanFiles(files);
-  db.sqlite.query("DELETE FROM task_files WHERE task_id=?").run(task.id);
-  for (const path of list)
-    db.sqlite.query("INSERT INTO task_files(task_id,path) VALUES (?,?)").run(task.id, path);
-}
-function storeStack(db, task, slug, who) {
-  if (task.kind !== "plan")
-    throw new Error(`${label(task)} is a ${task.kind}: only a plan is stacked on another plan`);
-  if (slug !== null) {
-    if (slug === task.plan)
-      throw new Error(`${label(task)} cannot be stacked on itself`);
-    const plans = new Map(allTasks(db, task.project).filter((t) => t.kind === "plan" && t.plan !== null).map((t) => [t.plan, t]));
-    const parent = plans.get(slug);
-    if (parent === undefined)
-      throw new Error(`Plan "${slug}" not found: stacked_on names a plan of this project`);
-    const leads = leadsPlan(who);
-    const foreign = [task, parent].filter((plan) => !leads(plan));
-    if (foreign.length > 0)
-      throw new Error(`${label(task)} cannot be stacked on "${slug}": ${foreign.map(label).join(" and ")} ${foreign.length > 1 ? "are" : "is"} not led by this session. A plan is stacked only on another plan of the same lead, whose branch it is built on`);
-    const chain = [slug];
-    for (let at = plans.get(slug)?.stackedOn ?? null;at !== null; ) {
-      if (at === task.plan)
-        throw new Error(`${label(task)} cannot be stacked on "${slug}": that would make a loop (${[task.plan, ...chain, at].join(" \u2192 ")})`);
-      if (chain.includes(at))
-        break;
-      chain.push(at);
-      at = plans.get(at)?.stackedOn ?? null;
-    }
-  }
-  db.sqlite.query("UPDATE tasks SET stacked_on=? WHERE id=?").run(slug, task.id);
-}
-function overlapText(held, overlaps) {
-  const shown = [
-    ...new Set(overlaps.map((o) => o.path === o.other ? o.path : `${o.path} (${o.other})`))
-  ];
-  const settling = held.status === "done" ? ` (done, not released: \`${COMMAND} herdr plans\` releases it when its pull request merges)` : "";
-  return `${label(held)}${settling}: ${shown.join(", ")}`;
-}
-function mergeFilesNote(check) {
-  return check.reason ? `. plans.mergeFiles was not read in full, so a merge file may count: ${check.reason}` : "";
-}
-function overlapsWith(held, files, check) {
-  return held.map(({ plan, why, files: theirs }) => ({
-    plan,
-    why,
-    overlaps: filesOverlap(files, theirs, check)
-  })).filter((one) => one.overlaps.length > 0);
-}
-function refuseHeldOverlap(db, task, who, check) {
-  const held = heldPlansIn(allTasks(db, task.project), who);
-  if (!held.some((h) => h.plan.id === task.id))
-    return;
-  const current = taskById(db, task.id);
-  const clashes = overlapsWith(rivalsOf(held, current, provedOf(check)), current.files, check);
-  if (clashes.length > 0)
-    throw new Error(`${label(task)} is held, so its files may not overlap another held plan: overlaps ${clashes.map((c) => overlapText(c.plan, c.overlaps)).join("; ")}${mergeFilesNote(check)}`);
-}
-var NO_FILES_CHECK = { ignore: [], caseFold: false };
-function provedOf(check) {
-  return provedSet(check.stacked);
-}
-function wayOut(held) {
-  return held.why === "reserved" ? `${label(held.plan)} is reserved: wait until its pull request merges or closes` : `${label(held.plan)} is running: wait until it is done or parked; if its session is gone, take it (${TASK_TOOL.take}), or park or drop it`;
-}
-function refuseFlightOverlap(db, plan, who, check) {
-  const row = taskById(db, plan.id);
-  const others = rivalsOf(heldPlansIn(allTasks(db, plan.project), who), row, provedOf(check));
-  if (others.length === 0)
-    return;
-  const files = row.files;
-  if (files.length === 0) {
-    const reserved = others.filter((h) => h.why === "reserved");
-    if (reserved.length > 0)
-      throw new Error(`${label(plan)} has no file list, so it cannot be shown clear of ${reserved.map((h) => label(h.plan)).join(", ")}: set its files first (${TASK_TOOL.update} with files)`);
-    return;
-  }
-  const clashes = overlapsWith(others, files, check);
-  if (clashes.length > 0)
-    throw new Error(`${label(plan)} cannot start, since it overlaps ${clashes.map((c) => overlapText(c.plan, c.overlaps)).join("; ")}. Two plans that share a file never run at once: ${clashes.map(wayOut).join("; ")}; or change this plan's files (${TASK_TOOL.update} with files)${mergeFilesNote(check)}`);
-}
-function enteringPlan(db, task, status, plan) {
-  if (status !== "in_progress" || plan === null)
-    return null;
-  if (task.status === "in_progress" && task.plan === plan)
-    return null;
-  return planNotInFlight(db, task.project, plan);
-}
-function planNotInFlight(db, project, plan) {
-  const all = allTasks(db, project);
-  const row = all.find((t) => t.kind === "plan" && t.plan === plan);
-  return row === undefined || isInFlight(all, row) ? null : row;
-}
-function insertTask(db, input, who, now, reason = null) {
-  const subject = subjectOf(input.subject);
-  const description = descriptionOf(input.description ?? "");
-  placeValid(db, input.project, null, input.parentId ?? null, input.kind ?? "task");
-  const parentPlan = input.parentId ? taskById(db, input.parentId).plan : null;
-  const plan = input.plan ?? parentPlan;
-  if ((input.kind ?? "task") !== "plan" && plan !== null)
-    openPlanValid(allTasks(db, input.project), plan);
-  if (parentPlan !== null && parentPlan !== plan)
-    throw new Error("parent belongs to another plan");
-  const id = newId();
-  const number = db.sqlite.query("SELECT MAX(n)+1 AS n FROM (SELECT COALESCE(MAX(number),0) AS n FROM tasks WHERE project=? UNION ALL SELECT COALESCE(MAX(number),0) FROM task_events WHERE project=?)").get(input.project, input.project)?.n ?? 1;
-  const status = input.status ?? "pending";
-  const claimed = status === "in_progress" && who.pid !== null;
-  const starts = status === "in_progress" && reason === null;
-  const entering = starts && plan !== null && (input.kind ?? "task") !== "plan" ? planNotInFlight(db, input.project, plan) : null;
-  db.sqlite.query("INSERT INTO tasks(id,project,number,parent_id,kind,subject,description,status,plan,phase,agent,branch,worktree,base,created_by,created_pid,created_start,claim_pid,claim_start,claim_session,created_at,updated_at,closed_at,blocking) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)").run(id, input.project, number, input.parentId ?? null, input.kind ?? "task", subject, description, status, plan, input.phase ?? null, input.agent ?? null, input.branch ?? null, input.worktree ?? null, input.base ?? null, who.sessionId, who.pid, who.pid === null ? null : who.procStart, claimed ? who.pid : null, claimed ? who.procStart : null, claimed ? who.sessionId : null, now, now, status === "done" || status === "dropped" ? now : null, input.type === "non-blocking" ? 0 : 1);
-  addBlockers(db, taskById(db, id), input.blockedBy ?? []);
-  if (input.files !== undefined)
-    storeFiles(db, taskById(db, id), input.files);
-  const task = taskById(db, id);
-  if (status === "in_progress")
-    unblockedValid(db, task);
-  const joining = starts && task.kind === "plan" ? task : entering;
-  if (joining !== null)
-    refuseFlightOverlap(db, joining, who, input.filesCheck ?? NO_FILES_CHECK);
-  const initial = {
-    kind: task.kind,
-    plan: task.plan,
-    phase: task.phase,
-    ...shape(db, task)
-  };
-  const changes = {};
-  for (const [key, value] of Object.entries(initial))
-    if (!empty(key, value))
-      changes[key] = [null, value];
-  recordEvent(db, task, "created", changes, who, now, reason);
-  return task;
-}
-function dependencies(db, task, change) {
-  for (const ref of change.remove ?? [])
-    db.sqlite.query("DELETE FROM task_deps WHERE task_id=? AND waits_for=?").run(task.id, ref);
-  addBlockers(db, task, change.add ?? []);
-}
-function applyUpdate(db, id, change, who, now) {
-  const task = taskById(db, id);
-  const before = shape(db, task);
-  const status = change.status ?? task.status;
-  const parent = change.parentId === undefined ? task.parentId : change.parentId;
-  placeValid(db, task.project, task, parent, task.kind);
-  let plan = task.plan;
-  if (parent !== task.parentId && parent !== null) {
-    plan = taskById(db, parent).plan;
-    if (plan !== null)
-      openPlanValid(allTasks(db, task.project), plan);
-    if (task.parentId !== null && taskById(db, task.parentId).kind === "plan" && plan !== task.plan)
-      throw new Error(`${label(task)} waits in plan "${task.plan ?? ""}": move it under a phase of that plan`);
-  }
-  if (change.waitsFor)
-    dependencies(db, task, change.waitsFor);
-  if (status === "done" && task.status !== "done")
-    doneValid(db, task);
-  if ((status === "in_progress" || status === "done") && status !== task.status)
-    unblockedValid(db, taskById(db, id));
-  const claiming = status === "in_progress" && (change.status === "in_progress" || change.claim === true);
-  const claim = change.claim === false || status !== "in_progress" ? null : claiming ? who.pid === null ? null : { pid: who.pid, procStart: who.procStart, sessionId: who.sessionId } : task.claim;
-  const entering = enteringPlan(db, task, status, plan);
-  db.sqlite.query("UPDATE tasks SET subject=?,description=?,status=?,parent_id=?,plan=?,claim_pid=?,claim_start=?,claim_session=?,updated_at=?,closed_at=?,blocking=?,agent=?,branch=?,worktree=?,base=? WHERE id=?").run(change.subject === undefined ? task.subject : subjectOf(change.subject), descriptionOf(change.description ?? task.description), status, parent, plan, claim?.pid ?? null, claim?.procStart ?? null, claim?.sessionId ?? null, now, status === "done" || status === "dropped" ? task.closedAt ?? now : null, (change.type ?? task.type) === "non-blocking" ? 0 : 1, change.agent ?? task.agent, change.branch ?? task.branch, change.worktree ?? task.worktree, change.base ?? task.base, id);
-  if (status === "dropped" && task.kind === "plan")
-    clearLead(db, id);
-  const check = change.filesCheck ?? NO_FILES_CHECK;
-  if (change.files !== undefined)
-    storeFiles(db, task, change.files);
-  if (change.stackedOn !== undefined)
-    storeStack(db, task, change.stackedOn, who);
-  if (change.files !== undefined || change.stackedOn !== undefined)
-    refuseHeldOverlap(db, task, who, check);
-  if (entering !== null)
-    refuseFlightOverlap(db, entering, who, check);
-  const changed = taskById(db, id);
-  recordChange(db, before, changed, who, now, null);
-  return changed;
-}
-function insertNote(db, id, text, who, now, reason = null) {
-  const task = taskById(db, id);
-  if (!text.trim() || text.length > NOTE_LIMIT)
-    throw new Error(`note must be 1\u2013${NOTE_LIMIT} characters`);
-  const row = db.sqlite.query("INSERT INTO task_notes(task_id,text,session_id,at) VALUES (?,?,?,?) RETURNING id").get(id, text, who.sessionId, now);
-  db.sqlite.query("UPDATE tasks SET updated_at=? WHERE id=?").run(now, id);
-  const preview = text.length > NOTE_PREVIEW ? `${text.slice(0, NOTE_PREVIEW)}\u2026` : text;
-  recordEvent(db, task, "noted", { note: [null, preview] }, who, now, reason);
-  return {
-    id: row?.id ?? 0,
-    taskId: id,
-    text,
-    sessionId: who.sessionId,
-    at: now
-  };
-}
-function deleteTask(db, id, who, now) {
-  return writeWork(db, () => {
-    const task = taskById(db, id);
-    if (db.sqlite.query("SELECT 1 FROM tasks WHERE parent_id=?").get(id))
-      throw new Error("task has tasks");
-    if (db.sqlite.query("SELECT 1 FROM task_notes WHERE task_id=?").get(id))
-      throw new Error("task has notes");
-    const stacked = task.kind === "plan" ? allTasks(db, task.project).filter((t) => t.kind === "plan" && t.stackedOn === task.plan) : [];
-    if (stacked.length > 0)
-      throw new Error(`${stacked.map(label).join(", ")} ${stacked.length > 1 ? "are" : "is"} stacked on it: clear that first (${TASK_TOOL.update} with stacked_on null)`);
-    const last = {};
-    for (const [key, value] of Object.entries(shape(db, task)))
-      if (!empty(key, value))
-        last[key] = [value, null];
-    db.sqlite.query("DELETE FROM tasks WHERE id=?").run(id);
-    recordEvent(db, task, "deleted", last, who, now, null);
-    return true;
-  });
-}
-function planTask(db, input, who, now) {
-  return allTasks(db, input.project).find((t) => t.kind === "plan" && t.plan === input.plan) ?? insertTask(db, { ...input, kind: "plan" }, who, now);
-}
-var CAP_ORIGIN = {
-  project: "this project's workflow settings",
-  personal: "your own workflow settings",
-  default: "the built-in default"
-};
-function refuseOverCap(tasks, plan, cap) {
-  const count = livePhaseCount(tasks, plan);
-  if (count < cap.max)
-    return;
-  throw new Error(`Plan "${plan}" already holds ${count} phases, the most plans.maxPhases allows (${cap.max}, from ${CAP_ORIGIN[cap.source]}). Do not add a phase: add the work as a task under the phase that owns its files (${TASK_TOOL.create} with that phase as parent), or queue it as a task under the next plan (${TASK_TOOL.create} with parent set to that plan's #n; make the plan first with ${TASK_TOOL.create}, plan and a subject). Only the person raises the cap: ask them to run \`${COMMAND} workflow set plans.maxPhases <n>\` in their own terminal (add --project to set it for this project).`);
-}
-function layPhase(db, input, who, now) {
-  const tasks = allTasks(db, input.project);
-  if (tasks.some((task) => task.plan === input.plan))
-    openPlanValid(tasks, input.plan);
-  const there = tasks.find((t) => t.kind === "phase" && t.plan === input.plan && t.phase === input.phase);
-  if (there)
-    return { task: there, made: false };
-  if (input.cap !== undefined)
-    refuseOverCap(tasks, input.plan, input.cap);
-  const parent = planTask(db, { project: input.project, plan: input.plan, subject: input.plan }, who, now);
-  const task = insertTask(db, {
-    project: input.project,
-    subject: input.subject,
-    kind: "phase",
-    parentId: parent.id,
-    plan: input.plan,
-    phase: input.phase,
-    agent: input.agent,
-    branch: input.branch,
-    worktree: input.worktree,
-    base: input.base,
-    ...input.description === undefined ? {} : { description: input.description },
-    ...input.type === undefined ? {} : { type: input.type },
-    ...input.blockedBy === undefined ? {} : { blockedBy: input.blockedBy }
-  }, who, now);
-  return { task, made: true };
-}
-function reservationNamed(db, target, who, options) {
-  const plan = target.kind === "plan" ? target : target.plan === null ? undefined : allTasks(db, target.project).find((t) => t.kind === "plan" && t.plan === target.plan);
-  if (plan === undefined || plan.lead === null)
-    return null;
-  const { from } = options;
-  if (from !== undefined && (from === plan.lead.handoutId || from === plan.lead.sessionId))
-    return plan.lead;
-  if (options.force || ownerOf(who)(plan))
-    return null;
-  throw new Error(`${label(plan)} is reserved for session ${plan.lead.sessionId ?? `process ${plan.lead.pid}`}: take it with from set to the hand-out id its brief names`);
-}
-function takeTasks(db, project, id, who, now, options) {
-  return writeWork(db, () => {
-    if (!who.sessionId)
-      throw new Error("take needs a resolvable calling session");
-    const target = taskById(db, id);
-    if (target.project !== project)
-      throw new Error("task belongs to another project");
-    if (target.kind === "phase")
-      throw new Error("take a plan or one task, not a phase");
-    const rows = target.kind === "plan" ? allTasks(db, project).filter((t) => t.plan === target.plan) : [target];
-    const reservation = reservationNamed(db, target, who, options);
-    const lead = reservation === null ? null : {
-      sessionId: reservation.sessionId,
-      pid: reservation.pid,
-      procStart: reservation.procStart
-    };
-    const isEnded = options.isEnded ?? (() => false);
-    const leadsOwn = (task) => lead !== null && (task.createdBy === lead.sessionId || claimHeldBy(task.creator, lead) || task.creator !== null && isEnded(task.creator));
-    for (const task of rows) {
-      if (options.from !== undefined && (task.status === "pending" || task.status === "in_progress") && task.createdBy !== null && task.createdBy !== who.sessionId && task.createdBy !== options.from && !leadsOwn(task))
-        throw new Error(`${label(task)} belongs to session ${task.createdBy ?? "unknown"}, not ${options.from}`);
-      if (task.claim && options.isLive(task.claim) && !options.force && !claimHeldBy(task.claim, who))
-        throw new Error(`${label(task)} is live in session ${task.claim.sessionId ?? task.createdBy ?? "unknown"}; use force to take it`);
-    }
-    for (const task of rows) {
-      db.sqlite.query("UPDATE tasks SET created_by=?,created_pid=?,created_start=?,claim_pid=CASE WHEN claim_pid IS NULL THEN NULL ELSE ? END,claim_start=CASE WHEN claim_pid IS NULL THEN NULL ELSE ? END,claim_session=CASE WHEN claim_pid IS NULL THEN NULL ELSE ? END,updated_at=? WHERE id=?").run(who.sessionId, who.pid, who.pid === null ? null : who.procStart, who.pid, who.pid === null ? null : who.procStart, who.pid === null ? null : who.sessionId, now, task.id);
-      recordEvent(db, task, "changed", {
-        createdBy: [task.createdBy, who.sessionId],
-        creator: [
-          task.creator === null ? null : `process ${task.creator.pid}`,
-          who.pid === null ? null : `process ${who.pid}`
-        ],
-        ...task.claim === null ? {} : {
-          claim: [
-            claimText(task.claim),
-            who.pid === null ? null : claimText({ pid: who.pid, sessionId: who.sessionId })
-          ]
-        }
-      }, who, now, options.force ? "forced take-over" : "take-over");
-    }
-    return rows.map((t) => taskById(db, t.id));
-  });
-}
-function clearLead(db, id) {
-  db.sqlite.query("UPDATE tasks SET lead_session=NULL,lead_pid=NULL,lead_start=NULL,lead_child=0,lead_handout=NULL WHERE id=?").run(id);
-}
-function restampsOf(all, who, isGone) {
-  if (who.pid === null || who.sessionId === null)
-    return [];
-  const found = [];
-  for (const task of all) {
-    let claim;
-    if (task.status === "in_progress" && task.claim !== null) {
-      if (resumedClaim(task.claim, who, isGone))
-        claim = "moved";
-      else if (claimHeldBy(task.claim, who) && task.claim.sessionId !== who.sessionId)
-        claim = "session";
-    }
-    const createdBy = isOpen(task) && claimHeldBy(task.creator, who) && task.createdBy !== who.sessionId;
-    const creator = isOpen(task) && resumedClaim(task.creator, who, isGone);
-    let lead;
-    const leadClaim = task.lead === null ? null : leadProcess(task.lead);
-    if (task.lead !== null && leadClaim !== null) {
-      if (resumedClaim(leadClaim, who, isGone))
-        lead = "moved";
-      else if (claimHeldBy(leadClaim, who) && task.lead.sessionId !== who.sessionId)
-        lead = "session";
-    }
-    if (claim !== undefined || createdBy || creator || lead !== undefined)
-      found.push({
-        task,
-        ...claim === undefined ? {} : { claim },
-        createdBy,
-        creator,
-        ...lead === undefined ? {} : { lead }
-      });
-  }
-  return found;
-}
-function restampsEverywhere(db, who, isGone) {
-  if (who.pid === null || who.sessionId === null)
-    return [];
-  const projects = db.sqlite.query("SELECT DISTINCT project FROM tasks WHERE (status IN ('pending','in_progress') AND (claim_pid=? OR claim_session=? OR created_pid=? OR created_by=?)) OR lead_pid=? OR lead_session=? ORDER BY project").all(who.pid, who.sessionId, who.pid, who.sessionId, who.pid, who.sessionId);
-  return projects.flatMap(({ project }) => restampsOf(allTasks(db, project), who, isGone));
-}
-function reclaimResumed(db, who, now, isGone) {
-  let found;
-  try {
-    found = restampsEverywhere(db, who, isGone);
-  } catch (error) {
-    return { ok: false, why: error instanceof Error ? error.message : String(error) };
-  }
-  if (found.length === 0)
-    return { ok: true, value: 0 };
-  return writeWork(db, () => {
-    const rows = restampsEverywhere(db, who, isGone);
-    for (const { task, claim, createdBy, creator, lead } of rows) {
-      if (creator) {
-        db.sqlite.query("UPDATE tasks SET created_pid=?,created_start=?,updated_at=? WHERE id=?").run(who.pid, who.procStart, now, task.id);
-        recordEvent(db, task, "changed", { creator: [`process ${task.creator?.pid}`, `process ${who.pid}`] }, who, now, "maker moved to the resumed session's process");
-      }
-      if (claim === "moved") {
-        db.sqlite.query("UPDATE tasks SET claim_pid=?,claim_start=?,claim_session=?,updated_at=? WHERE id=?").run(who.pid, who.procStart, who.sessionId, now, task.id);
-        recordEvent(db, task, "changed", { claim: [`process ${task.claim?.pid}`, `process ${who.pid}`] }, who, now, "claim moved to the resumed session's process");
-      } else if (claim === "session") {
-        db.sqlite.query("UPDATE tasks SET claim_session=?,updated_at=? WHERE id=?").run(who.sessionId, now, task.id);
-        recordEvent(db, task, "changed", { claim: [task.claim === null ? null : claimText(task.claim), who.sessionId] }, who, now, "claim follows the session id its process now runs under");
-      }
-      if (createdBy) {
-        db.sqlite.query("UPDATE tasks SET created_by=?,updated_at=? WHERE id=?").run(who.sessionId, now, task.id);
-        recordEvent(db, task, "changed", { createdBy: [task.createdBy, who.sessionId] }, who, now, "made-by session follows the session id its process now runs under");
-      }
-      if (lead === "moved") {
-        db.sqlite.query("UPDATE tasks SET lead_pid=?,lead_start=?,updated_at=? WHERE id=?").run(who.pid, who.procStart, now, task.id);
-        recordEvent(db, task, "changed", { lead: [`process ${task.lead?.pid}`, `process ${who.pid}`] }, who, now, "lead moved to the resumed session's process");
-      } else if (lead === "session") {
-        db.sqlite.query("UPDATE tasks SET lead_session=?,updated_at=? WHERE id=?").run(who.sessionId, now, task.id);
-        recordEvent(db, task, "changed", { lead: [task.lead?.sessionId ?? `process ${task.lead?.pid}`, who.sessionId] }, who, now, "lead follows the session id its process now runs under");
-      }
-    }
-    return rows.length;
-  });
-}
-
 // src/tasks/ops.ts
 function isPhaseId(value) {
   return value.length <= MAX_PHASE && /^[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?$/.test(value) && !value.includes("--");
@@ -26729,9 +27152,10 @@ function deployTasksIn(root) {
   return `Deploy tasks in ${root}:`;
 }
 function isFolderOnDisk(root, path) {
-  const full = join8(root, path);
-  return existsSync8(full) && statSync4(full).isDirectory();
+  const full = join9(root, path);
+  return existsSync9(full) && statSync4(full).isDirectory();
 }
+var DEPLOY_NOT_READ = "Deploy tasks were not read.";
 var DELETE_TRACKED = "Tracked deploy task: it is part of a commit, so close it with task_done instead";
 var TASK_LINE_CAP = 200;
 var TASK_TEXT_CAP = 20000;
@@ -26739,9 +27163,6 @@ function value(result) {
   if (!result.ok)
     throw new Error(result.why);
   return result.value;
-}
-function label2(task) {
-  return `#${task.number} "${task.subject}"`;
 }
 function freedText(all, closed, owns, canStartIn) {
   const freed = freedBy(all, closed, owns).filter((t) => t.plan === null || canStartIn(t.plan));
@@ -26805,6 +27226,14 @@ function createTaskOps(options = {}) {
       const ctx = taskContext(cwd, env);
       if (!ctx.ok)
         throw new Error(ctx.why);
+      const reading = READ_ONLY_OPERATIONS.has(operation);
+      const gate = taskWriteRefusal(ctx.projectConfig, env);
+      const gateWhy = gate === null ? null : `${gate.why}. ${gate.fix}`;
+      if (gateWhy !== null) {
+        if (!reading)
+          throw new Error(gateWhy);
+        notes.push(gateWhy);
+      }
       const explicitCwd = options.cwd?.();
       let deployCtx;
       const deployContext = () => {
@@ -26817,7 +27246,7 @@ function createTaskOps(options = {}) {
         const reclaimed = reclaimResumed(store, who, now, claimGone);
         if (!reclaimed.ok) {
           const why = `claims of this session not moved: ${reclaimed.why}`;
-          if (!READ_ONLY_OPERATIONS.has(operation))
+          if (!reading)
             throw new Error(why);
           notes.push(`${why}; the next call retries`);
         }
@@ -26851,10 +27280,21 @@ function createTaskOps(options = {}) {
         const chosen = baseBranch(locateCheckout(root, { env }), env, root);
         return provedStacks(seen, handBackGit, chosen.from === "default" ? null : chosen.base);
       };
+      const found = [];
+      let filesRead;
+      const filesCheck = () => {
+        filesRead ??= (options.filesCheck ?? planFilesCheck)(cwd);
+        return filesRead;
+      };
       const readCheck = (seen) => ({
-        ...(options.filesCheck ?? planFilesCheck)(cwd),
-        stacked: readStacks(seen)
+        ...filesCheck(),
+        stacked: readStacks(seen),
+        found
       });
+      const warnFound = () => {
+        if (found.length > 0)
+          notes.push(...warnOverlaps(store, found, filesCheck(), who, now));
+      };
       const filesWrite = (files, seen) => {
         for (const raw of files) {
           const path = normalizePlanFile(raw);
@@ -27020,9 +27460,10 @@ function createTaskOps(options = {}) {
               const row = planTask(store, { project: ctx.project, plan: slug, subject: input.subject }, who, now);
               return listed === null ? row : applyUpdate(store, row.id, listed, who, now);
             }));
+            warnFound();
             return {
               ok: true,
-              text: `${label2(made)} \xB7 plan ${slug}${there ? " \xB7 it was there already" : ""}`
+              text: `${label(made)} \xB7 plan ${slug}${there ? " \xB7 it was there already" : ""}`
             };
           }
           const phaseId = input.phase;
@@ -27049,7 +27490,7 @@ function createTaskOps(options = {}) {
           const unchanged = kept.length ? `: its ${kept.join(", ")} stay as they were (${TASK_TOOL.update} changes them)` : "";
           return {
             ok: true,
-            text: `${label2(laid.task)} \xB7 phase ${phaseId} of plan ${slug}${laid.made ? "" : ` \xB7 it was there already${unchanged}`}`
+            text: `${label(laid.task)} \xB7 phase ${phaseId} of plan ${slug}${laid.made ? "" : ` \xB7 it was there already${unchanged}`}`
           };
         }
         const parent = input.parent ? work(input.parent) : undefined;
@@ -27076,11 +27517,12 @@ function createTaskOps(options = {}) {
             enterFlight(taskPlan, flight);
           return made;
         }));
+        warnFound();
         const byId = new Map(allTasks(store, ctx.project).map((t) => [t.id, t]));
         return {
           ok: true,
           text: [
-            `${label2(task)}${parent ? ` under #${parent.number}` : ""}`,
+            `${label(task)}${parent ? ` under #${parent.number}` : ""}`,
             ...marks(task, byId)
           ].join(" \xB7 ")
         };
@@ -27126,9 +27568,9 @@ function createTaskOps(options = {}) {
           throw new Error("status open reopens a closed deploy task; a work task is pending or in_progress");
         const task = work(input.task);
         if (input.files !== undefined && task.kind !== "plan")
-          throw new Error(`${label2(task)} is a ${task.kind}: only a plan task has a file list (set files on the plan's own #n)`);
+          throw new Error(`${label(task)} is a ${task.kind}: only a plan task has a file list (set files on the plan's own #n)`);
         if (input.stacked_on !== undefined && task.kind !== "plan")
-          throw new Error(`${label2(task)} is a ${task.kind}: only a plan task is stacked on another plan (set stacked_on on the plan's own #n)`);
+          throw new Error(`${label(task)} is a ${task.kind}: only a plan task is stacked on another plan (set stacked_on on the plan's own #n)`);
         const seen = asWritten(all, task.id, {
           stackedOn: input.stacked_on,
           base: input.base,
@@ -27175,13 +27617,14 @@ function createTaskOps(options = {}) {
             enterFlight(landing, flight);
           return changed;
         }));
+        warnFound();
         const afterAll = allTasks(store, ctx.project);
         const byId = new Map(afterAll.map((t) => [t.id, t]));
         const closed = updated.status === "done" || updated.status === "dropped";
         const stale = starting ? staleBrief(updated, afterAll) : null;
         return {
           ok: true,
-          text: [label2(updated), updated.status.replaceAll("_", " "), ...marks(updated, byId)].join(" \xB7 ") + (closed ? freedAfter(afterAll, updated) : "") + (stale === null ? "" : `
+          text: [label(updated), updated.status.replaceAll("_", " "), ...marks(updated, byId)].join(" \xB7 ") + (closed ? freedAfter(afterAll, updated) : "") + (stale === null ? "" : `
 ${stale}`)
         };
       }
@@ -27212,7 +27655,7 @@ ${stale}`)
         }));
         return {
           ok: true,
-          text: `${label2(changed)} \xB7 ${input.outcome}${freedAfter(allTasks(store, ctx.project), changed)}`
+          text: `${label(changed)} \xB7 ${input.outcome}${freedAfter(allTasks(store, ctx.project), changed)}`
         };
       }
       if (operation === "note") {
@@ -27228,7 +27671,7 @@ ${stale}`)
         const input = taskSchemas.get.parse(raw);
         const text = isDeployTaskId(input.task) ? (() => {
           const file = project(input.task).file;
-          const text = readFileSync8(file, "utf8");
+          const text = readFileSync9(file, "utf8");
           const here = deployContext();
           const root = here.ok ? here.checkoutRoot : null;
           if (root === null)
@@ -27272,10 +27715,10 @@ ${historyText(gone, { full: input.history })}`;
           const notes = notesOf(store, task).map((n) => `${new Date(n.at).toISOString()} ${n.text}`).join(`
 `);
           const byId = new Map(all.map((t) => [t.id, t]));
-          const blockers = task.waitsFor.map((id) => byId.get(id)).filter((t) => t !== undefined).sort((a, b) => a.number - b.number).map((t) => `${label2(t)} (${t.status.replaceAll("_", " ")})`);
+          const blockers = task.waitsFor.map((id) => byId.get(id)).filter((t) => t !== undefined).sort((a, b) => a.number - b.number).map((t) => `${label(t)} (${t.status.replaceAll("_", " ")})`);
           return [
             [
-              `${label2(task)} [${stateWords(task, byId, true)}]`,
+              `${label(task)} [${stateWords(task, byId, true)}]`,
               ...["agent", "branch", "worktree", "base"].flatMap((key) => task[key] === null ? [] : [`${key[0]?.toUpperCase()}${key.slice(1)}: ${task[key]}`]),
               ...blockers.length ? [`Blocked by: ${blockers.join(", ")}`] : [],
               ...task.files.length ? [`Files: ${task.files.join(", ")}`] : [],
@@ -27310,7 +27753,7 @@ ${historyText(gone, { full: input.history })}`;
             throw new Error(trackedRefusal);
           if (guarded)
             throw new Error(personOnly(task.id, "deletes a blocking deploy task", `delete ${task.id}`));
-          rmSync3(task.file);
+          rmSync4(task.file);
           return {
             ok: true,
             text: `${input.task} \xB7 deleted \xB7 ${relative2(root, task.file)} \xB7 removed from ${root}`
@@ -27330,6 +27773,8 @@ ${historyText(gone, { full: input.history })}`;
         if (deployReadable())
           projects = projectTasks(input.include_closed).filter((t) => (input.include_closed || t.status === "open") && `${t.title}
 ${t.body}`.toLowerCase().includes(input.text.toLowerCase()));
+        else if (gateWhy !== null)
+          notes.push(DEPLOY_NOT_READ);
       } else {
         const input = taskSchemas.list.parse(raw);
         planLedger = input.scope === "plan";
@@ -27345,6 +27790,8 @@ ${t.body}`.toLowerCase().includes(input.text.toLowerCase()));
           selected = selected.filter((t) => t.kind !== "task" && (input.plan === undefined && ownPlans.size > 1 ? t.plan !== null && ownPlans.has(t.plan) : shown !== null && t.plan === shown));
         } else if (deployReadable())
           projects = projectTasks(!openOnly).filter((t) => !openOnly || t.status === "open");
+        else if (gateWhy !== null)
+          notes.push(DEPLOY_NOT_READ);
       }
       const selectedIds = new Set(selected.map((t) => t.id));
       const byId = new Map(all.map((t) => [t.id, t]));
@@ -27363,7 +27810,7 @@ ${t.body}`.toLowerCase().includes(input.text.toLowerCase()));
         const progress = (count.total || task.kind === "phase" ? ` \xB7 ${count.closed}/${count.total}` : "") + (task.kind === "plan" && (cap !== null || capWhy !== null) ? ` \xB7 ${planNote(all, task, cap)}` : "");
         const binding = task.kind === "phase" ? ` \xB7 agent ${task.agent ?? "none"} \xB7 branch ${task.branch ?? "none"}` : "";
         const state = claimState(task, CLAIM_PROCESS, who);
-        const queue = planLedger && task.kind === "plan" && isOpen(task) ? planQueueState(all, task, notesOf(store, task).some((n) => n.text.startsWith(PARK_NOTE_PREFIX))) : undefined;
+        const queue = planLedger && task.kind === "plan" && isOpen(task) ? planQueueState(all, task, holdsNoteStarting(store, task, PARK_NOTE_PREFIX)) : undefined;
         lines.push(`${"  ".repeat(depth)}#${task.number} [${stateWords(task, byId, false, queue)}] ${task.subject}${progress}${binding}${state === "another session" ? " (another session)" : ""}`);
         for (const child of selected.filter((t) => t.parentId === task.id))
           visit(child, depth + 1);
@@ -27409,7 +27856,7 @@ Finish or drop every blocking task before marking its parent done.
 Three layers: plan \u203A phase \u203A task. A non-blocking task holds nothing; a task blocked by an open task waits for it.
 A plan holds at most plans.maxPhases phases, and a phase starts only once it holds tasks. Lay phases in any of your plans, up front; run one plan at a time: starting work in a plan puts it in flight, and a start in another plan is refused until the first is finished or parked (park = its plan task to pending, once its phases stop; resume = start a phase again). A later ask waits as a task under its plan (parent = the plan's #n). A task made with no plan and no parent is loose: a small fix needs no plan, and it never joins or starts one.
 A step of a phase closes done with evidence, or dropped with a note that gives the reason. A phase with a recorded branch closes done only once that branch has a commit past its base and is in the plan branch.
-A plan task holds its file list (files on task_create or task_update): repo-relative paths, a folder ends in /; a plan is handed to a child only when no held plan's files overlap.
+A plan task holds its file list (files on task_create or task_update): repo-relative paths, a folder ends in /. Plans whose files overlap may run at once: ${OVERLAP_WARNS}.
 Save notes as you go with ${TASK_TOOL.note}.`;
 var descriptions = {
   take: "Take a plan or task into the calling session. Live claims need force; a refusal changes nothing.",
@@ -27420,7 +27867,7 @@ var descriptions = {
   list: "List the caller's tasks as a tree, or list the plan or project (scope project also lists the open deploy tasks).",
   get: "Read a task, its notes and its history: each change with its time, the values before and after, and the session that made it. Use offset to read the next part; history true also prints every earlier description.",
   search: "Search work tasks and deploy tasks.",
-  delete: "Delete a mistaken task with no notes or tasks, or an untracked deploy task file."
+  delete: "Delete a mistaken task with no notes of its own (the kit's Overlap: notes do not count) or tasks, or an untracked deploy task file."
 };
 function createTaskServer(options = {}) {
   const ops = createTaskOps({ ...options, refuseBlockingDrop: true });

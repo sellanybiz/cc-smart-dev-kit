@@ -1,12 +1,76 @@
 /**
  * `parseWorktreeList` (`git.ts`): what `git worktree list --porcelain` says about each worktree,
- * the reason of a lock included.
+ * the reason of a lock included; and `runGit`'s text on stdin.
  */
 import { describe, expect, test } from "bun:test";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { tempDir } from "../testing/temp";
-import { parseWorktreeList, reflogEntryTime, worktreeAdminDir } from "./git";
+import { cleanGitEnv, git, tempDir } from "../testing/temp";
+import {
+  commitArgs,
+  commitIn,
+  parseWorktreeList,
+  reflogEntryTime,
+  runGit,
+  runGitBytes,
+  runGitRaw,
+  worktreeAdminDir,
+} from "./git";
+
+describe("runGit with input", () => {
+  test("git reads the text on stdin byte for byte: CRLF, no last newline, non-ASCII", () => {
+    const repo = tempDir("git-input");
+    git(repo, "init", "-q");
+    const text = '{\r\n  "name": "café"\r\n}';
+    const hashed = runGit(repo, ["hash-object", "-w", "--stdin"], cleanGitEnv(), 15_000, {}, text);
+    expect(hashed).toMatchObject({ ok: true, code: 0 });
+    expect(runGitRaw(repo, ["cat-file", "blob", hashed.out], cleanGitEnv()).out).toBe(text);
+  });
+
+  test("a byte order mark git writes stays the text's first character", () => {
+    const repo = tempDir("git-bom");
+    git(repo, "init", "-q");
+    const text = '﻿{ "a": 1 }\n';
+    const hashed = runGit(repo, ["hash-object", "-w", "--stdin"], cleanGitEnv(), 15_000, {}, text);
+    expect(runGitRaw(repo, ["cat-file", "blob", hashed.out], cleanGitEnv()).out).toBe(text);
+  });
+});
+
+describe("runGitBytes", () => {
+  test("bytes that are not UTF-8 go in and come out as they are", () => {
+    const repo = tempDir("git-bytes");
+    git(repo, "init", "-q");
+    // "café" in Latin-1: 0xE9 alone is not UTF-8, and a decode would make it U+FFFD.
+    const latin1 = new Uint8Array([0x63, 0x61, 0x66, 0xe9, 0x0a]);
+    const hashed = runGitBytes(
+      repo,
+      ["hash-object", "-w", "--stdin"],
+      cleanGitEnv(),
+      15_000,
+      latin1,
+    );
+    expect(hashed).toMatchObject({ ok: true, code: 0 });
+    const id = new TextDecoder().decode(hashed.out).trim();
+    expect(runGitBytes(repo, ["cat-file", "blob", id], cleanGitEnv()).out).toEqual(latin1);
+  });
+});
+
+describe("commitArgs and commitIn", () => {
+  test("a rev that names a commit gives its full id, a tag of it too; anything else gives null", () => {
+    const repo = tempDir("git-commit");
+    git(repo, "init", "-q", "-b", "main");
+    writeFileSync(join(repo, "a.txt"), "a\n");
+    git(repo, "add", "a.txt");
+    git(repo, "commit", "-q", "-m", "first");
+    git(repo, "tag", "-a", "-m", "tag", "v1");
+    const head = git(repo, "rev-parse", "HEAD").trim();
+    const ask = (rev: string) => commitIn(runGit(repo, commitArgs(rev), cleanGitEnv()));
+    expect(ask("HEAD")).toBe(head);
+    expect(ask("v1")).toBe(head);
+    expect(ask("main:a.txt")).toBeNull();
+    expect(ask("no-such-ref")).toBeNull();
+  });
+});
 
 describe("parseWorktreeList", () => {
   test("a lock keeps its reason: Claude Code's own lock can be told from a person's", () => {

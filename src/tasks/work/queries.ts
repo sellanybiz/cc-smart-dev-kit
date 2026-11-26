@@ -445,7 +445,7 @@ export function parentHolds(parent: WorkTask): boolean {
  * The session that leads a plan, as a caller: the lead its reservation names, else the session
  * that owns its task (its maker, which a take moves). Null when the plan names neither.
  */
-function planLead(plan: WorkTask): Who | null {
+export function planLead(plan: WorkTask): Who | null {
   if (plan.lead !== null)
     return plan.lead.sessionId === null && plan.lead.pid === null
       ? null
@@ -527,7 +527,7 @@ export function planFiles(db: WorkDb, plan: string | WorkTask): string[] {
     .map((row) => row.path);
 }
 
-/** A plan nothing else may overlap (D4): why it is held, whose it is, and the files it holds. */
+/** A plan another plan is judged against (D4): why it is held, whose it is, and the files it holds. */
 export interface HeldPlan {
   plan: WorkTask;
   /**
@@ -775,6 +775,10 @@ export function notesOf(db: WorkDb, task: string | WorkTask): WorkNote[] {
       "SELECT id, task_id AS taskId,text,session_id AS sessionId,at FROM task_notes WHERE task_id=? ORDER BY id",
     )
     .all(typeof task === "string" ? task : task.id);
+}
+/** True when `task` holds a note whose text starts with `start`. */
+export function holdsNoteStarting(db: WorkDb, task: string | WorkTask, start: string): boolean {
+  return notesOf(db, task).some((note) => note.text.startsWith(start));
 }
 interface EventRow {
   id: number;

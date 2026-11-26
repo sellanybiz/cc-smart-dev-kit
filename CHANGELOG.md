@@ -3,6 +3,59 @@
 What each release changed, newest first. A release's **What to run** steps are the ones to do
 in your own terminal after the update; the user guide is [README.md](README.md).
 
+## 6.7.0
+
+Fixes four problems that sessions in real projects reported, and lets plans that share files run
+at the same time.
+
+- **Plans that share files run together.** The plan-overlap check warns and never refuses: a
+  start, a reservation, a change of a held plan's files and a `herdr` hand-out all go ahead.
+  The answer gets one warning line naming the other plan and the shared paths, and both plans
+  get the same text as an `Overlap:` note, once per pair and set of shared paths. The note
+  points to the build skill's § 6: the plan that merges second brings its branch up to date with
+  the merged base, resolves the conflicts and reruns the full check, and both pull requests name
+  the overlap. `plans.mergeFiles`, `plans.appendOnly` and a proved stack still settle their
+  paths. When the shared paths include files the base marks `linguist-generated`, the warning
+  names them, and prints a ready `cc-smart-dev-kit workflow propose plans.mergeFiles '…'` line
+  only when listing them would settle those files; for a folder both plans list, it says to narrow the
+  folder entry or put the folder in `plans.mergeFiles`. There is no setting to bring the block
+  back. `herdr plans` shows an overlapping plan as ready, and its `--json` has no
+  `overlaps` state any more.
+- **`workflow propose` works with project git hooks.** It makes its one commit with git
+  plumbing from the base branch (no worktree, no checkout), signs it when `commit.gpgSign` is on,
+  and pushes with `--no-verify` and a lease that only creates the branch. So a project hook that
+  needs installed packages (a lefthook or husky pre-commit) no longer stops it. The pull request
+  says the commit was made without the project's hooks. A failed proposal takes its branch back
+  where the push went (a separate push URL too), and each run's commit is its own
+  (`Proposal-Id:` trailer). Its `--json` line has no `worktree` field.
+  A project `reference-transaction` hook still runs on the fetch, the push and a take-back
+  delete.
+- **Task writes refuse up front when the project file cannot be used.** When `requires` asks
+  for a newer kit, or the file is broken, every task write (create, update, done, note, take,
+  delete, and `task import claude-mem`) refuses before anything changes, with the same message
+  and its fix. Reads still answer and name the problem. `herdr plans`, `start --plan`, `start --task` and `adopt` check
+  the same. Before, `task_create` of a plan could pass and the next `task_update` refuse,
+  leaving half a plan.
+- **The review record finds reviews run from a builder's worktree.** The hook skips only a
+  reviewer standing in its own isolated worktree (the folder's id is the agent's own). A
+  listed reviewer that records nothing writes why on one stderr line, which Claude Code keeps in
+  its debug log only. `merge-check` also counts a review on a local branch whose tip holds the
+  pull request's head, so a builder branch pushed under another name is covered; a
+  squash-merged parent's review still is not. A covering review stands when a later candidate
+  times out.
+- **Security: generated marks come from the base only.** The review count and `workflow
+  claims` leave out files marked `linguist-generated` only by the base commit's own
+  `.gitattributes`. A mark in `.git/info/attributes`, in a `core.attributesFile` or in the
+  system file no longer counts, so a local file cannot hide a big change from the review limit.
+  What counts as binary is the base's too, and so is the replay's merge: no local attribute
+  (a `* binary` that would zero a big change's lines), merge driver, inherited
+  `GIT_ATTR_SOURCE`, config passed in the environment, replace ref, graft or shallow file can
+  change what the limit measures. `workflow claims` reads every file as text, so a local `binary` mark or an
+  empty textconv cannot hide a claim either.
+
+**What to run:** `cc-smart-dev-kit update`, then restart open Claude Code sessions: a session keeps
+the task server it started with, which still refuses overlaps and has no write gate.
+
 ## 6.6.0
 
 Closes the slop gaps a code-quality audit found still open after 6.5.2.

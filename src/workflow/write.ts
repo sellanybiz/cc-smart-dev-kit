@@ -22,14 +22,14 @@
  * config for the project's), so a wrong value can never reach a file. Returns one plain line
  * for the person; anything that must not be written throws, and nothing is written.
  */
-import { mkdirSync } from "node:fs";
+import { mkdirSync, readFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { type CliPaths, cliPaths, tildify } from "../cli/paths";
 import { checkCcSmartDevKitConfig } from "../project/config";
 import { raisedRequires, requiresFloor, requiresTooLow } from "../project/init";
 import { loadProjectConfig, locateCheckout } from "../project/resolve";
 import { jsonTextFor } from "../setup/json-edit";
-import { applyManagedJson, isObject, readJsonObject } from "../setup/managed-json";
+import { applyManagedJson, isObject, parseJsonObject, readJsonObject } from "../setup/managed-json";
 import { STATUSLINE_KEY, statuslineSetting } from "../setup/statusline";
 import { atomicWrite, backupFile, realTarget } from "../setup/write";
 import { heldSince, hold, resume, updateFiles } from "../update/state";
@@ -168,14 +168,74 @@ export function writeProjectSetting(
   value: unknown,
   env: Env = process.env,
 ): string {
+  const leaf = projectLeaf(key, value);
+  const file = projectFile(cwd, env);
+  const edit = editProjectLeaf(readFileSync(file, "utf8"), file, leaf, value);
+  if (!edit.changed) return edit.line;
+  // A backup first, in the state folder: `restore` does not undo a project's file (it is the
+  // project's, committed to git), so the backup is only there to look at.
+  backupFile(cliPaths(env).stateDir, file);
+  // `realTarget`: a file linked into a dotfiles repo stays a link, and its target gets the
+  // change — an atomic write straight at the link would replace it with a plain file.
+  atomicWrite(realTarget(file), edit.text, 0o644);
+  return edit.line;
+}
+
+/** A raised `requires` in words: the one spelling `workflow set --project` and propose print. */
+export function requiresRaiseText(raised: NonNullable<ProjectEdit["raised"]>): string {
+  return `requires ${JSON.stringify(raised.from ?? null)} -> ${JSON.stringify(raised.to)} (the file's fields need it)`;
+}
+
+/** What one setting does to the project file's text. */
+export interface ProjectEdit {
+  /** The file's next text: the text as it was when nothing changes. */
+  text: string;
+  changed: boolean;
+  /** `requires` before and after, when the edit raised it (the file's fields need it). */
+  raised: { from: unknown; to: unknown } | null;
+  /** The line `workflow set --project` prints for it. */
+  line: string;
+}
+
+/**
+ * The project file's next text with one setting set (`value` undefined: removed), from its
+ * current `text`: `writeProjectSetting`'s own step, with no disk. `file` names the file in the
+ * lines and errors. Throws, as the writer does, for a setting that is not the project's, a
+ * value the file cannot hold, or a text that is not a JSON object.
+ */
+export function editProjectSetting(
+  text: string,
+  file: string,
+  key: string,
+  value: unknown,
+): ProjectEdit {
+  return editProjectLeaf(text, file, projectLeaf(key, value), value);
+}
+
+/** A project setting by its current name, and the path of its leaf in the project's file. */
+interface ProjectLeaf {
+  key: WorkflowKey;
+  path: string[];
+}
+
+/**
+ * Where a setting lives in the project's file: the policy under `workflow`, and the two switches
+ * that are project settings (`sessionNames`, `jobs.route`). A setting only the person holds, and
+ * a switch value that is not a boolean, are refused.
+ */
+function projectLeaf(key: string, value: unknown): ProjectLeaf {
   const wanted = requireKey(key);
   if (!isProjectKey(wanted)) {
     throw new Error(
       `${wanted} is your own setting, not the project's: run it without --project (${PERSONAL_ONLY_REASONS[wanted]})`,
     );
   }
-  if (isSwitchKey(wanted)) return writeProjectSwitch(cwd, wanted, value, env);
-  return writeProjectFile(cwd, ["workflow", ...wanted.split(".")], wanted, value, env);
+  if (!isSwitchKey(wanted)) return { key: wanted, path: ["workflow", ...wanted.split(".")] };
+  const name = switchOf(wanted);
+  switchValue(wanted, value);
+  if (name === "sessionNames") return { key: "switches.sessionNames", path: ["sessionNames"] };
+  if (name === "jobRoute") return { key: "switches.jobRoute", path: ["jobs", "route"] };
+  throw new Error(`Unexpected project switch: ${wanted}`);
 }
 
 /** The project's config file, or an error saying how to get one. */
@@ -194,15 +254,13 @@ function projectFile(cwd: string, env: Env): string {
 }
 
 /** One leaf of the project's own file, kept valid and formatted as it was. */
-function writeProjectFile(
-  cwd: string,
-  path: string[],
-  key: WorkflowKey,
+function editProjectLeaf(
+  text: string,
+  file: string,
+  { key, path }: ProjectLeaf,
   value: unknown,
-  env: Env,
-): string {
-  const file = projectFile(cwd, env);
-  const { data, indent, text } = readJsonObject(file);
+): ProjectEdit {
+  const { data, indent } = parseJsonObject(text, file);
   const before = structuredClone(data);
   if (value === undefined) removeLeaf(data, path);
   else setLeaf(data, path, value);
@@ -221,14 +279,15 @@ function writeProjectFile(
   // The same checks every reader of the file runs (`requires`, the retired engine fields, the
   // strict parse), so this never writes a file the hooks would then refuse.
   checkCcSmartDevKitConfig(data, file);
-  if (Bun.deepEquals(before, data, true)) return shownNothing(file, key, value);
-  // A backup first, in the state folder: `restore` does not undo a project's file (it is the
-  // project's, committed to git), so the backup is only there to look at.
-  backupFile(cliPaths(env).stateDir, file);
-  // `realTarget`: a file linked into a dotfiles repo stays a link, and its target gets the
-  // change — an atomic write straight at the link would replace it with a plain file.
-  atomicWrite(realTarget(file), jsonTextFor(text, data, indent), 0o644);
-  return shownProjectWrite(file, key, value, text === null, before, data);
+  if (Bun.deepEquals(before, data, true)) {
+    return { changed: false, line: shownNothing(file, key, value), raised: null, text };
+  }
+  return {
+    changed: true,
+    line: shownProjectWrite(file, key, value, before, data),
+    raised: before.requires === data.requires ? null : { from: before.requires, to: data.requires },
+    text: jsonTextFor(text, data, indent),
+  };
 }
 
 /**
@@ -240,18 +299,18 @@ function shownProjectWrite(
   file: string,
   key: WorkflowKey,
   value: unknown,
-  created: boolean,
   before: Record<string, unknown>,
   after: Record<string, unknown>,
 ): string {
-  if (before.requires === after.requires) return shownWrite(file, key, value, created);
-  const raised = `requires ${JSON.stringify(before.requires ?? null)} -> ${JSON.stringify(after.requires)} (the file's fields need it)`;
+  // The project's file is there before any write (`projectFile`), so a write never creates it.
+  if (before.requires === after.requires) return shownWrite(file, key, value, false);
+  const raised = requiresRaiseText({ from: before.requires, to: after.requires });
   const { requires: _was, ...restBefore } = before;
   const { requires: _now, ...restAfter } = after;
   if (Bun.deepEquals(restBefore, restAfter, true)) {
     return `~ ${file}: ${raised}; ${saidValue(key, value)}${value === undefined ? "" : " (already set)"}`;
   }
-  return `${shownWrite(file, key, value, created)}; ${raised}`;
+  return `${shownWrite(file, key, value, false)}; ${raised}`;
 }
 
 /** `true`/`false`, or `undefined` for "unset". Anything else is refused. */
@@ -274,24 +333,6 @@ function writePersonalSwitch(
   throw new Error(
     `${key} is the project's setting (sessionNames in .claude/cc-smart-dev-kit.json): run it with --project inside the project`,
   );
-}
-
-/** A switch of the project's own: `sessionNames`, or `jobs.route`. */
-function writeProjectSwitch(
-  cwd: string,
-  key: `switches.${SwitchName}`,
-  value: unknown,
-  env: Env,
-): string {
-  const name = switchOf(key);
-  switchValue(key, value);
-  if (name === "sessionNames") {
-    return writeProjectFile(cwd, ["sessionNames"], "switches.sessionNames", value, env);
-  }
-  if (name === "jobRoute") {
-    return writeProjectFile(cwd, ["jobs", "route"], "switches.jobRoute", value, env);
-  }
-  throw new Error(`Unexpected project switch: ${key}`);
 }
 
 /** Claude Code's own `statusLine` key, through the one writer for a user's settings file. */

@@ -54,8 +54,7 @@ never retry the refused launch in a loop. Count reviews, hunts and scouts in the
 ## 2. Start the ready wave in one message
 
 Every phase of the plan you are building (§ 1) with no open blocker starts in this one
-message: with the default 10 subagents, a whole plan of independent phases can start at once.
-Mark each `in_progress` and record its starting commit as `base`.
+message. Mark each `in_progress` and record its starting commit as `base`.
 Choose a fresh builder (or rules-maintainer for instruction files) and explicit `model`
 and `effort` by the job. Announce the slot, model and effort. Send all independent `Agent`
 calls in one message, each with `isolation: "worktree"`; they run in the background (Claude
@@ -213,7 +212,7 @@ of the session's own folder. In order:
    reviewed to the plan head, with the whole `Review round 2:` note as its context, never a
    condensed list. Save its report on the plan task as `Final review:`. Fix its confirmed
    findings the same way; nothing reviews those fixes.
-7. **The full check,** once, in the main session (`/cc-smart-dev-kit:verify-change` § 4).
+7. **The full check,** once, in the main session (`/cc-smart-dev-kit:verify-change` § 4), after any overlap (below).
 8. **The pull request,** below.
 
 `risky: true` makes every agent of a round the senior engineer on `opus` at `xhigh`; pass no
@@ -228,6 +227,17 @@ turn each that holds into a fix task under the plan. An "Incomplete review" line
 track returned no answer: review its area yourself, with no extra run. Do not declare success
 while a material defect remains; record the blocker and remaining work. If the review leaves
 the plan open, move the plan file back out of `archive/`.
+
+**An overlapping plan** has an `Overlap:` note on its plan task naming the other plan and the
+shared paths (`task_get` on the plan; the tool's answer also warns once): the store warns,
+never refuses. Before the full
+check, and again before this pull request merges: once a plan a note names has merged, bring
+the plan branch up to date with your pull request's base (rebase while unpushed; once pushed,
+`git merge origin/<base>`, since rewriting pushed history is the person's word:
+`/cc-smart-dev-kit:commit`), resolve the conflicts and rerun the full check. The resolution is a
+change after the last review (above). The plan that merges first has nothing to catch up. Each
+plan's pull request names the plans its notes name and the shared files; a plan child does the
+same.
 
 Once the review and the full check pass, the one pull request of the plan opens, as `openPr` and the person's permissions allow
 (`/cc-smart-dev-kit:commit`, `/cc-smart-dev-kit:pull-request`). Include the reviews that ran and the real checks. A fix after it opens (a late review
@@ -251,21 +261,20 @@ skill's start rules, with model and effort judged as in § 2. A plan child skips
 paragraph.
 
 **See the plans.** `cc-smart-dev-kit herdr plans` shows where each plan this session leads stands,
-and which are ready (`/cc-smart-dev-kit:herdr`). How a child settles the project's merge files
-after a rebase is the project's `.claude/cc-smart-dev-kit/build.md`.
+and which are ready, with any overlap named (`/cc-smart-dev-kit:herdr`).
 
 **Coordinator: the lead builds nothing**, even when one plan is ready.
 
 1. Run `herdr plans`. Start each ready plan with `herdr start --plan <slug>`, all in one
-   message. The store reserves a plan before its child launches, so two starts that share a
-   file cannot both pass: the second is refused and names the plan in its way.
+   message. The store reserves a plan before its child launches; two plans that share a file
+   both start, each with its `Overlap:` note (§ 6).
 2. Run `herdr wait` in the background. Each child's `herdr report` names its pull request, what
    shipped and what failed. Read the pull request itself: a report is evidence, not proof. A
    report that says a slop audit is due, or that the project has no `Reuse signals` heading, is
    your offer to make (§ 6, `/cc-smart-dev-kit:code-structure` § 13). Once the children's plans
    have closed, run `workflow slop status` once; a later record can hide an earlier due.
-3. When a pull request merges, run `herdr plans`: it releases the plan's files, and what
-   waited on them turns ready. Start those the same way. While a merge is pending,
+3. When a pull request merges, run `herdr plans`: it releases the plan's files, and a plan
+   blocked on that merge turns ready. Start those the same way. While a merge is pending,
    `herdr plans --wait` in the background returns when a plan changes.
 4. A plan whose child is gone resumes with `herdr start --plan <slug>` (and the usual model, effort,
    mode and brief), in the child's own worktree. The
@@ -276,8 +285,8 @@ after a rebase is the project's `.claude/cc-smart-dev-kit/build.md`.
 
 1. Reserve the lowest-numbered ready plan for yourself with `herdr plans --reserve <slug>`. It
    runs the gates a hand-out runs. Then start the plan as in §§ 1 and 2. The plan stays held
-   until its pull request merges or closes, even after the plan closes, so no child's plan can
-   overlap it.
+   until its pull request merges or closes, even after the plan closes, so a child's plan that
+   shares its files is still warned.
 2. Hand every other ready plan to a child, as in Coordinator step 1.
 3. Build the own plan with builder subagents, §§ 2 to 6. A child's report or a merge is not the
    person's prompt: handle it after the current hand-back, never in the middle of a phase.

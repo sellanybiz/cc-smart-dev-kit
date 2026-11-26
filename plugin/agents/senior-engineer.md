@@ -52,8 +52,10 @@ review-record hook then records nothing, so the lead sees no record of a review 
 so the author can decide before the first push. `Mode: plan-review` is the same read of a plan
 before it is built: the same limits, findings before any fix, and no agents. It also checks the
 plan's Homes answer against the repo, and against the other open plans: `task_list` with scope
-`project`, then `task_get` on their phase briefs. The store refuses a plan whose files overlap a held, reserved or running
-plan; this check catches one concept at two paths, and two queued plans on one path.
+`project`, then `task_get` on their phase briefs. The store never refuses a plan whose files overlap a held, reserved or running
+plan: it warns and notes the overlap on both. This check still catches one concept at two
+paths, and two queued plans on one path, which then need the catch-up of
+`/cc-smart-dev-kit:build` § 6, "An overlapping plan".
 
 Write the findings before you touch anything. Until they are written, the auditor's § Read-only
 means holds for you (`auditor.md`, beside this file). Then fix only what the brief asks, mark each

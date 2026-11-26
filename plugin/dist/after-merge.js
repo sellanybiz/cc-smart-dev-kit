@@ -439,7 +439,7 @@ var init_state = __esm(() => {
 });
 // src/build-info/index.ts
 var info = {
-  version: "6.6.0",
+  version: "6.7.0",
   repo: "sellanybiz/cc-smart-dev-kit",
   dependencies: [
     {
@@ -2215,7 +2215,7 @@ var init_task_server_name = __esm(() => {
 });
 
 // src/tasks/words.ts
-var TASK_TOOL, TASK_TOOLS_ALLOW_RULE, TASK_COMMAND, MAX_PHASE = 8, PHASE_RULE;
+var TASK_TOOL, TASK_TOOLS_ALLOW_RULE, TASK_COMMAND, MAX_PHASE = 8, PHASE_RULE, OVERLAP_NOTE = "Overlap:", OVERLAP_WARNS, PLAN_FILES_WORDS;
 var init_words = __esm(() => {
   init_names();
   init_task_server_name();
@@ -2233,6 +2233,8 @@ var init_words = __esm(() => {
   TASK_TOOLS_ALLOW_RULE = `mcp__${TASKS_SERVER_NAME}__*`;
   TASK_COMMAND = `${COMMAND} task`;
   PHASE_RULE = `1-${MAX_PHASE} characters: ASCII letters, digits, ".", "_" and "-", a letter or a digit at each end, never "--"`;
+  OVERLAP_WARNS = `the answer warns, and both plans get an ${OVERLAP_NOTE} note`;
+  PLAN_FILES_WORDS = `Plan task only: the repo-relative paths the plan changes, with / separators; a folder ends in /. Two plans overlap when a path is equal or inside the other's folder (inside a plans.appendOnly folder, only the same file). An overlap with a reserved or running plan never refuses: ${OVERLAP_WARNS}. The list replaces the stored one; an empty list clears it.`;
 });
 
 // src/path-compare.ts
@@ -2251,16 +2253,34 @@ var init_path_compare = __esm(() => {
   IGNORE_CASE = process.platform === "win32";
 });
 
-// src/hooks/git.ts
-function runGit(cwd, args, env, timeoutMs = 15000, own = {}) {
-  return spawnGit(cwd, args, env, timeoutMs, own, true);
+// src/workflow/reviews.ts
+import { createHash as createHash2 } from "crypto";
+function repoKey(repo) {
+  return createHash2("sha256").update(repo).digest("hex").slice(0, 16);
 }
-function spawnGit(cwd, args, env, timeoutMs, own, trim) {
+var START_KEPT_MS;
+var init_reviews = __esm(() => {
+  init_lock();
+  init_write();
+  START_KEPT_MS = 24 * 60 * 60 * 1000;
+});
+
+// src/hooks/git.ts
+function runGit(cwd, args, env, timeoutMs = 15000, own = {}, input) {
+  return spawnGit(cwd, args, env, timeoutMs, own, true, input);
+}
+function spawnGit(cwd, args, env, timeoutMs, own, trim, input) {
+  const bytes = input === undefined ? undefined : new TextEncoder().encode(input);
+  const run = spawnGitBytes(cwd, args, env, timeoutMs, own, bytes);
+  const out = new TextDecoder("utf-8", { ignoreBOM: true }).decode(run.out);
+  return { ...run, out: trim ? out.trim() : out };
+}
+function spawnGitBytes(cwd, args, env, timeoutMs, own, input) {
   try {
     const result = Bun.spawnSync(["git", ...args], {
       cwd,
       env: { ...gitEnv(env), ...own },
-      stdin: "ignore",
+      stdin: input ?? "ignore",
       stdout: "pipe",
       stderr: "pipe",
       timeout: timeoutMs,
@@ -2268,11 +2288,10 @@ function spawnGit(cwd, args, env, timeoutMs, own, trim) {
     });
     const err = result.signalCode ? GIT_TIMED_OUT2 : result.stderr.toString().trim();
     const code = result.signalCode ? null : result.exitCode;
-    const out = result.stdout.toString();
-    return { ok: result.exitCode === 0, out: trim ? out.trim() : out, err, code };
+    return { ok: result.exitCode === 0, out: result.stdout, err, code };
   } catch (error) {
     const err = error instanceof Error ? error.message : String(error);
-    return { ok: false, out: "", err, code: null };
+    return { ok: false, out: new Uint8Array, err, code: null };
   }
 }
 function parseWorktreeList(porcelain) {
@@ -2315,6 +2334,7 @@ var GIT_TIMED_OUT2 = "timed out", GUARD_GIT_TIMEOUT_MS = 5000;
 var init_git = __esm(() => {
   init_path_compare();
   init_git_env();
+  init_reviews();
   init_path_compare();
 });
 
@@ -8911,16 +8931,9 @@ var init_resolve2 = __esm(() => {
   };
 });
 
-// src/workflow/reviews.ts
-import { createHash as createHash2 } from "crypto";
-function repoKey(repo) {
-  return createHash2("sha256").update(repo).digest("hex").slice(0, 16);
-}
-var START_KEPT_MS;
-var init_reviews = __esm(() => {
-  init_lock();
-  init_write();
-  START_KEPT_MS = 24 * 60 * 60 * 1000;
+// src/setup/installed-plugins.ts
+var init_installed_plugins = __esm(() => {
+  init_build_info();
 });
 
 // src/tasks/deploy/files.ts
@@ -8946,7 +8959,11 @@ function projectKey(repo) {
   return repoKey(repo);
 }
 var init_context = __esm(() => {
+  init_build_info();
+  init_paths2();
+  init_config();
   init_resolve();
+  init_installed_plugins();
   init_reviews();
   init_check();
   init_files();
@@ -10118,7 +10135,7 @@ import {
   unlinkSync as unlinkSync2
 } from "fs";
 import { dirname as dirname3, join as join7 } from "path";
-var PARSER_FINGERPRINT = "4823944e2b30c1e4a49af5e0fe9abc4b1b32e9d4d5e184fab4055002e51367ce";
+var PARSER_FINGERPRINT = "e8f36a50af9582ba2986fcdc57a830efb02c05b6c3ee3fb6e5eb73c29a6778d5";
 var CHECKED_DIR = "checked";
 var CHECKED_CACHE_LIMIT = 64;
 var CHECKED_FILE_MAX_BYTES = 256 * 1024;

@@ -8,7 +8,8 @@ Each plan here ships as its own version. So every plan changes the same files:
 `plugin/.claude-plugin/plugin.json` (the version), `install.sh` and `install.ps1` (the
 installers' copy of it), `CHANGELOG.md`, `plugin/dist/` and, when the portal changed,
 `plugin/portal-ui/`. These are the files `plans.mergeFiles` should name. Until it does, two
-plans whose file lists both name one of them overlap, so they run one at a time.
+plans whose file lists both name one of them overlap: both still run, each gets an `Overlap:`
+note, and the one that merges second catches up (the build skill, § 6 "An overlapping plan").
 
 - **Builders never touch them.** A phase brief says: no version bump, no CHANGELOG entry, no
   `bun run build`. The plan's lead does all of it after the last phase merges and before

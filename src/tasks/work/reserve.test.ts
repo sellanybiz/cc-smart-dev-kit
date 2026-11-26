@@ -9,8 +9,10 @@ import { COMMAND } from "../../build-info/names";
 import { cliPaths } from "../../cli/paths";
 import { claudeMemDb } from "../../testing/claude-mem-db";
 import { hookEnv, makeRepo } from "../../testing/hooks";
+import { overlapLines, overlapNotes, sharedWords } from "../../testing/overlap-lines";
 import { tempDir } from "../../testing/temp";
 import { folderProject } from "../context";
+import { type OverlapCheck, warnOverlaps } from "../files-check";
 import { createTaskOps, type TaskAnswer } from "../ops";
 import { openWorkDb, workDbFile } from "./db";
 import { sessionEnded } from "./identity";
@@ -19,6 +21,7 @@ import { classifyLeadPlans, type LeadPlanState } from "./lead-plans";
 import { allTasks, eventsOf, heldPlans, isLead, taskById } from "./queries";
 import {
   createTask,
+  type PlanOverlap,
   type ReservePlan,
   reclaimResumed,
   releasePlan,
@@ -96,6 +99,24 @@ function reserve(db: Db, slug: string, over: Partial<ReservePlan> = {}) {
 function leadOf(db: Db, id: string) {
   return taskById(db, id).lead;
 }
+/**
+ * Reserves `slug` (`reserve`), then warns as a caller does after the write (`warnOverlaps`, which
+ * also saves the notes): the reservation, and the warning lines.
+ */
+function reserveWarned(
+  db: Db,
+  slug: string,
+  over: Partial<ReservePlan> = {},
+  check?: OverlapCheck,
+) {
+  const found: PlanOverlap[] = [];
+  const reserved = ok(reserve(db, slug, { ...over, found }));
+  const judged = check ?? { ignore: over.ignore ?? [], caseFold: over.caseFold ?? false };
+  return { reserved, lines: warnOverlaps(db, found, judged, over.who ?? LEAD, 11) };
+}
+/** The rule every overlap note carries for the plan that merges second. */
+const SECOND_RULE =
+  "Both may run at once; the plan that merges second catches up (`/cc-smart-dev-kit:build` § 6, An overlapping plan).";
 
 test("a reservation writes the lead, records it in the history, and the plan is held", () => {
   const { db } = setup();
@@ -121,15 +142,18 @@ test("a reservation writes the lead, records it in the history, and the plan is 
   expect(heldPlans(db, "p", OTHER).map((h) => h.mine)).toEqual([false]);
 });
 
-test("a plan that overlaps a reserved plan is refused, naming the plan and the files", () => {
+test("a plan that overlaps a reserved plan is reserved too, warned and noted on both", () => {
   const { db } = setup();
-  plan(db, "alpha", ["src/a/", "docs/x.md"]);
-  plan(db, "beta", ["src/a/inner.ts", "docs/x.md", "lib/free.ts"]);
+  const alpha = plan(db, "alpha", ["src/a/", "docs/x.md"]);
+  const beta = plan(db, "beta", ["src/a/inner.ts", "docs/x.md", "lib/free.ts"]);
   ok(reserve(db, "alpha"));
-  expect(why(reserve(db, "beta"))).toBe(
-    '#2 "beta" overlaps #1 "alpha": docs/x.md, src/a/inner.ts (src/a/)',
-  );
-  expect(allTasks(db, "p")[1]?.lead).toBeNull();
+  const { reserved, lines } = reserveWarned(db, "beta");
+  expect(reserved.lead?.sessionId).toBe("lead");
+  expect(lines).toEqual([
+    `Overlap: #1 "alpha" and #2 "beta" share docs/x.md, src/a/ (src/a/inner.ts). Leads: #1 session lead; #2 session lead. ${SECOND_RULE}`,
+  ]);
+  expect(overlapNotes(db, alpha.id)).toEqual(lines);
+  expect(overlapNotes(db, beta.id)).toEqual(lines);
 });
 
 test("a plan with an open blocker is refused, naming the blocker", () => {
@@ -178,9 +202,8 @@ test("only an open, pending plan of the caller's own is reserved, and the caller
 
 test("a refused reservation changes nothing", () => {
   const { db } = setup();
-  plan(db, "alpha", ["src/a/"]);
-  const beta = plan(db, "beta", ["src/a/x.ts"]);
-  ok(reserve(db, "alpha"));
+  const alpha = plan(db, "alpha", ["src/a/"]);
+  const beta = plan(db, "beta", ["src/b/"], { blockedBy: [alpha.id] });
   const before = eventsOf(db, beta).length;
   expect(reserve(db, "beta").ok).toBe(false);
   expect(eventsOf(db, beta)).toHaveLength(before);
@@ -188,19 +211,26 @@ test("a refused reservation changes nothing", () => {
   expect(taskById(db, beta.id).updatedAt).toBe(1);
 });
 
-test("merge files take no part in the check, and case folds when the file system does", () => {
+test("merge files take no part in the warning, and case folds when the file system does", () => {
   const { db } = setup();
   plan(db, "alpha", ["CHANGELOG.md", "src/a/"]);
   plan(db, "beta", ["CHANGELOG.md", "plugin/dist/cli.js"]);
   plan(db, "gamma", ["SRC/A/y.ts"], { now: 3 });
+  plan(db, "delta", ["CHANGELOG.md"], { now: 4 });
+  plan(db, "epsilon", ["SRC/A/z.ts"], { now: 5 });
   ok(reserve(db, "alpha"));
-  expect(why(reserve(db, "beta"))).toContain("overlaps #1");
-  expect(ok(reserve(db, "beta", { ignore: ["CHANGELOG.md", "plugin/dist/"] })).lead).not.toBeNull();
-  // Folded, the ignore list too: `changelog.md` leaves out `CHANGELOG.md`.
-  expect(why(reserve(db, "gamma", { caseFold: true }))).toBe(
-    '#3 "gamma" overlaps #1 "alpha": SRC/A/y.ts (src/a/)',
-  );
-  expect(ok(reserve(db, "gamma")).lead).not.toBeNull();
+  expect(reserveWarned(db, "beta", { ignore: ["CHANGELOG.md", "plugin/dist/"] }).lines).toEqual([]);
+  // Folded: `SRC/A/y.ts` sits in `src/a/`.
+  expect(reserveWarned(db, "gamma", { caseFold: true }).lines.map(sharedWords)).toEqual([
+    '#1 "alpha" and #3 "gamma" share src/a/ (SRC/A/y.ts)',
+  ]);
+  // Without the merge list, the shared file is warned of, once for each plan that holds it.
+  expect(reserveWarned(db, "delta").lines.map(sharedWords)).toEqual([
+    '#1 "alpha" and #4 "delta" share CHANGELOG.md',
+    '#2 "beta" and #4 "delta" share CHANGELOG.md',
+  ]);
+  // Not folded, case counts.
+  expect(reserveWarned(db, "epsilon").lines).toEqual([]);
 });
 
 test("a held plan's branch diff counts: files its branch reached overlap too", () => {
@@ -213,13 +243,15 @@ test("a held plan's branch diff counts: files its branch reached overlap too", (
     "src/a/",
     "lib/stray.ts",
   ]);
-  expect(why(reserve(db, "beta", { extraFiles: { [alpha.id]: ["lib/stray.ts"] } }))).toBe(
-    '#2 "beta" overlaps #1 "alpha": lib/stray.ts',
-  );
-  expect(ok(reserve(db, "beta")).lead).not.toBeNull();
+  expect(reserveWarned(db, "beta").lines).toEqual([]);
+  ok(releasePlan(db, { project: "p", plan: "beta", who: LEAD, now: 12 }));
+  const extraFiles = { [alpha.id]: ["lib/stray.ts"] };
+  expect(reserveWarned(db, "beta", { extraFiles }).lines.map(sharedWords)).toEqual([
+    '#1 "alpha" and #2 "beta" share lib/stray.ts',
+  ]);
 });
 
-test("two reservations at once: the second one reads the first and refuses", () => {
+test("two reservations at once: the second one reads the first and warns", () => {
   const { db, open } = setup();
   plan(db, "alpha", ["src/shared/a.ts"]);
   plan(db, "beta", ["src/shared/"], { now: 2 });
@@ -227,10 +259,11 @@ test("two reservations at once: the second one reads the first and refuses", () 
   try {
     // Each connection is its own session of the store; the write lock orders them.
     expect(ok(reserve(db, "alpha")).lead?.sessionId).toBe("lead");
-    expect(why(reserve(second, "beta"))).toBe(
-      '#2 "beta" overlaps #1 "alpha": src/shared/ (src/shared/a.ts)',
-    );
-    expect(leadOf(second, allTasks(second, "p")[1]?.id ?? "")).toBeNull();
+    const { reserved, lines } = reserveWarned(second, "beta");
+    expect(lines.map(sharedWords)).toEqual([
+      '#1 "alpha" and #2 "beta" share src/shared/a.ts (src/shared/)',
+    ]);
+    expect(leadOf(second, reserved.id)?.sessionId).toBe("lead");
   } finally {
     second.close();
   }
@@ -244,10 +277,13 @@ test("a session's own plan in flight is held without a reservation", () => {
   expect(heldPlans(db, "p", LEAD).map((h) => [h.plan.plan, h.why, h.mine])).toEqual([
     ["solo", "in-flight", false],
   ]);
-  expect(why(reserve(db, "alpha"))).toBe('#2 "alpha" overlaps #1 "solo": src/s/x.ts (src/s/)');
+  expect(reserveWarned(db, "alpha").lines.map(sharedWords)).toEqual([
+    '#1 "solo" and #2 "alpha" share src/s/ (src/s/x.ts)',
+  ]);
   // Once it stops running it holds nothing.
-  ok(updateTask(db, solo.id, { status: "pending" }, OTHER, 3));
-  expect(ok(reserve(db, "alpha")).lead).not.toBeNull();
+  ok(releasePlan(db, { project: "p", plan: "alpha", who: LEAD, now: 12 }));
+  ok(updateTask(db, solo.id, { status: "pending" }, OTHER, 13));
+  expect(reserveWarned(db, "alpha").lines).toEqual([]);
 });
 
 test("a release frees the files; a plan done but not released still holds them; a drop releases", () => {
@@ -257,7 +293,10 @@ test("a release frees the files; a plan done but not released still holds them; 
   ok(reserve(db, "alpha"));
   ok(updateTask(db, alpha.id, { status: "done" }, LEAD, 5));
   // The child's pull request may still be open: the reservation holds until it is released.
-  expect(why(reserve(db, "beta"))).toContain("overlaps #1");
+  expect(reserveWarned(db, "beta").lines.map(sharedWords)).toEqual([
+    '#1 "alpha" and #2 "beta" share src/a/ (src/a/x.ts)',
+  ]);
+  ok(releasePlan(db, { project: "p", plan: "beta", who: LEAD, now: 5 }));
   const released = ok(releasePlan(db, { project: "p", plan: "alpha", who: LEAD, now: 6 }));
   expect(released.lead).toBeNull();
   expect(eventsOf(db, alpha).at(-1)?.reason).toBe("plan released");
@@ -265,7 +304,7 @@ test("a release frees the files; a plan done but not released still holds them; 
   const events = eventsOf(db, alpha).length;
   ok(releasePlan(db, { project: "p", plan: "alpha", who: LEAD, now: 7 }));
   expect(eventsOf(db, alpha)).toHaveLength(events);
-  expect(ok(reserve(db, "beta")).lead).not.toBeNull();
+  expect(reserveWarned(db, "beta").lines).toEqual([]);
   expect(why(releasePlan(db, { project: "p", plan: "nope", who: LEAD, now: 8 }))).toBe(
     'Plan "nope" not found',
   );
@@ -276,32 +315,34 @@ test("a release frees the files; a plan done but not released still holds them; 
   expect(taskById(db, gamma.id).lead).toBeNull();
 });
 
-test("a held plan's files may not grow into another held plan, by stored lists", () => {
+test("a held plan's files may grow into another held plan, by stored lists: the overlap is found", () => {
   const { db } = setup();
   const alpha = plan(db, "alpha", ["src/a/"]);
   const beta = plan(db, "beta", ["src/b/"]);
   const gamma = plan(db, "gamma", ["src/g/"]);
   ok(reserve(db, "alpha"));
   ok(reserve(db, "beta"));
-  const refusal = updateTask(db, beta.id, { files: ["src/b/", "src/a/inner.ts"] }, LEAD, 5);
-  expect(why(refusal)).toBe(
-    '#2 "beta" is held, so its files may not overlap another held plan: overlaps #1 "alpha": src/a/inner.ts (src/a/)',
-  );
-  expect(taskById(db, beta.id).files).toEqual(["src/b/"]);
-  // A disjoint list is taken, and a merge file is left out of the check.
-  ok(updateTask(db, beta.id, { files: ["src/b/", "docs/"] }, LEAD, 6));
-  ok(
-    updateTask(
-      db,
-      beta.id,
-      { files: ["src/b/", "src/a/inner.ts"], filesCheck: { ignore: ["src/a/"], caseFold: false } },
-      LEAD,
-      7,
-    ),
-  );
-  // A plan that is not held takes any list: reservePlan judges it later.
-  ok(updateTask(db, gamma.id, { files: ["src/a/"] }, LEAD, 8));
-  expect(why(reserve(db, "gamma"))).toContain("overlaps #1");
+  /** A new list for `task`, and the overlaps its write found. */
+  const grow = (task: WorkTask, files: string[], ignore: string[] = [], now = 5) => {
+    const found: PlanOverlap[] = [];
+    ok(
+      updateTask(db, task.id, { files, filesCheck: { ignore, caseFold: false, found } }, LEAD, now),
+    );
+    return found.map((one) => [one.plan.plan, one.other.plan, one.overlaps]);
+  };
+  expect(grow(beta, ["src/b/", "src/a/inner.ts"])).toEqual([
+    ["beta", "alpha", [{ path: "src/a/inner.ts", other: "src/a/" }]],
+  ]);
+  expect(taskById(db, beta.id).files).toEqual(["src/a/inner.ts", "src/b/"]);
+  // A disjoint list finds nothing, and a merge file is left out of the check.
+  expect(grow(beta, ["src/b/", "docs/"], [], 6)).toEqual([]);
+  expect(grow(beta, ["src/b/", "src/a/inner.ts"], ["src/a/"], 7)).toEqual([]);
+  // A plan that is not held takes any list unjudged: its reservation finds the overlap later.
+  expect(grow(gamma, ["src/a/"], [], 8)).toEqual([]);
+  expect(reserveWarned(db, "gamma").lines.map(sharedWords)).toEqual([
+    '#1 "alpha" and #3 "gamma" share src/a/',
+    '#2 "beta" and #3 "gamma" share src/a/inner.ts (src/a/)',
+  ]);
   expect(alpha.files).toEqual(["src/a/"]);
 });
 
@@ -362,8 +403,30 @@ function reserveIn(
     db.close();
   }
 }
+/** `reserveIn`, then the warning after it (`warnOverlaps`): the warning lines. */
+function reserveWarnedIn(w: ReturnType<typeof world>, slug: string, who: Who) {
+  const found: PlanOverlap[] = [];
+  ok(reserveIn(w, slug, who, { found }));
+  const db = w.store();
+  try {
+    return warnOverlaps(db, found, { ignore: [], caseFold: false }, who, 11);
+  } finally {
+    db.close();
+  }
+}
+/** The `Overlap:` notes of the task numbered `ref`, oldest first. */
+function notesIn(w: ReturnType<typeof world>, ref: string): string[] {
+  const db = w.store();
+  try {
+    const task = allTasks(db, w.project).find((t) => `#${t.number}` === ref);
+    if (task === undefined) throw new Error(`no task ${ref}`);
+    return overlapNotes(db, task.id);
+  } finally {
+    db.close();
+  }
+}
 
-test("the lead reserves its own plan, starts it, and a later overlapping reservation refuses", () => {
+test("the lead reserves its own plan, starts it, and a later overlapping reservation warns", () => {
   const w = world();
   const alpha = laidPlan(w, LEAD, "alpha", ["src/a/"]);
   const ops = w.ops(LEAD);
@@ -375,8 +438,10 @@ test("the lead reserves its own plan, starts it, and a later overlapping reserva
     said(ops.call("update", { task: alpha.phase, status: "in_progress" }));
     expect(said(ops.call("get", { task: "#1" }))).toContain("[plan · in progress]");
     expect(said(ops.call("get", { task: "#1" }))).toContain("Reserved for: session lead");
-    // Held twice over now (reserved and in flight): a child's plan on its files refuses.
-    expect(why(reserveIn(w, "beta", LEAD))).toContain('overlaps #1 "alpha"');
+    // Held twice over now (reserved and in flight): a child's plan on its files is warned of.
+    expect(reserveWarnedIn(w, "beta", LEAD).map(sharedWords)).toEqual([
+      '#1 "alpha" and #4 "Beta" share src/a/ (src/a/inner.ts)',
+    ]);
     // A plan on other files is handed out.
     expect(ok(reserveIn(w, "gamma", LEAD)).lead).not.toBeNull();
   } finally {
@@ -384,7 +449,7 @@ test("the lead reserves its own plan, starts it, and a later overlapping reserva
   }
 });
 
-test("another session's unreserved plan in flight blocks an overlapping reservation", () => {
+test("another session's unreserved plan in flight is warned of when an overlapping plan is reserved", () => {
   const w = world();
   const solo = laidPlan(w, OTHER, "solo", ["src/s/"]);
   const other = w.ops(OTHER);
@@ -392,16 +457,18 @@ test("another session's unreserved plan in flight blocks an overlapping reservat
   try {
     said(lead.call("create", { subject: "Alpha", plan: "alpha", files: ["src/s/x.ts"] }));
     said(other.call("update", { task: solo.phase, status: "in_progress" }));
-    expect(why(reserveIn(w, "alpha", LEAD))).toBe(
-      '#4 "Alpha" overlaps #1 "solo": src/s/x.ts (src/s/)',
-    );
+    const lines = reserveWarnedIn(w, "alpha", LEAD);
+    expect(lines.map(sharedWords)).toEqual(['#1 "solo" and #4 "Alpha" share src/s/ (src/s/x.ts)']);
+    expect(lines[0]).toContain("Leads: #1 session other; #4 session lead.");
+    expect(notesIn(w, "#1")).toEqual(lines);
+    expect(notesIn(w, "#4")).toEqual(lines);
   } finally {
     other.close();
     lead.close();
   }
 });
 
-test("task_update files on a held plan reads the merge files before the lock and refuses an overlap", () => {
+test("task_update files on a held plan reads the merge files before the lock and warns of an overlap", () => {
   const w = world();
   laidPlan(w, LEAD, "alpha", ["src/a/"]);
   const ops = w.ops(LEAD);
@@ -409,10 +476,16 @@ test("task_update files on a held plan reads the merge files before the lock and
     said(ops.call("create", { subject: "Beta", plan: "beta", files: ["src/b/"] }));
     expect(ok(reserveIn(w, "alpha", LEAD)).lead).not.toBeNull();
     expect(ok(reserveIn(w, "beta", LEAD)).lead).not.toBeNull();
-    expect(refused(ops.call("update", { task: "#4", files: ["src/b/", "src/a/x.ts"] }))).toBe(
-      '#4 "Beta" is held, so its files may not overlap another held plan: overlaps #1 "alpha": src/a/x.ts (src/a/)',
-    );
-    said(ops.call("update", { task: "#4", files: ["src/b/", "docs/"] }));
+    const answer = said(ops.call("update", { task: "#4", files: ["src/b/", "src/a/x.ts"] }));
+    expect(overlapLines(answer).map(sharedWords)).toEqual([
+      '#1 "alpha" and #4 "Beta" share src/a/ (src/a/x.ts)',
+    ]);
+    expect(said(ops.call("get", { task: "#4" }))).toContain("Files: src/a/x.ts, src/b/");
+    expect(notesIn(w, "#1")).toEqual(overlapLines(answer));
+    expect(notesIn(w, "#4")).toEqual(overlapLines(answer));
+    expect(
+      overlapLines(said(ops.call("update", { task: "#4", files: ["src/b/", "docs/"] }))),
+    ).toEqual([]);
   } finally {
     ops.close();
   }
@@ -445,10 +518,11 @@ test("task_update files on a held plan works with the real git read of the check
           now: 5,
         }),
       );
-    // No origin and no committed list: the merge files are empty, the check still runs.
-    expect(refused(lead.call("update", { task: "#2", files: ["src/a/"] }))).toContain(
-      "overlaps #1",
-    );
+    // No origin and no committed list: the merge files are empty, the check still runs, and no
+    // base means no generated file is named.
+    const lines = overlapLines(said(lead.call("update", { task: "#2", files: ["src/a/"] })));
+    expect(lines.map(sharedWords)).toEqual(['#1 "Alpha" and #2 "Beta" share src/a/']);
+    expect(lines[0]).not.toContain("generated");
   } finally {
     db.close();
     lead.close();
@@ -870,7 +944,7 @@ test("M4: the lead may start its own plan and may not start a plan it handed out
   }
 });
 
-test("L1 and L2: the merge files are read for every list, and a read that fell short is named in the refusal", () => {
+test("L1 and L2: the merge files are read for every list, and a read that fell short is named in the warning", () => {
   const repo = makeRepo();
   const env = hookEnv();
   const stateDir = cliPaths(env).stateDir;
@@ -902,31 +976,33 @@ test("L1 and L2: the merge files are read for every list, and a read that fell s
           holder: "child",
           ignore: [],
           caseFold: false,
-          reason: null,
           now: 5,
         }),
       );
-    expect(refused(ops.call("update", { task: "#2", files: ["src/a/x.ts"] }))).toBe(
-      '#2 "Beta" is held, so its files may not overlap another held plan: overlaps #1 "Alpha": src/a/x.ts (src/a/). plans.mergeFiles was not read in full, so a merge file may count: no ref origin/main was found',
+    const lines = overlapLines(said(ops.call("update", { task: "#2", files: ["src/a/x.ts"] })));
+    expect(lines.map(sharedWords)).toEqual(['#1 "Alpha" and #2 "Beta" share src/a/ (src/a/x.ts)']);
+    expect(lines[0]).toEndWith(
+      "plans.mergeFiles was not read in full, so a merge file may count: no ref origin/main was found.",
     );
-    // reservePlan says it too.
+    // A reservation's warning says it too.
     said(ops.call("create", { subject: "Gamma", plan: "gamma", files: ["src/a/y.ts"] }));
-    expect(
-      why(
-        reservePlan(db, {
-          project,
-          plan: "gamma",
-          who: LEAD,
-          holder: "child",
-          ignore: [],
-          caseFold: false,
-          reason: "bad entry docs",
-          now: 7,
-        }),
-      ),
-    ).toBe(
-      '#3 "Gamma" overlaps #1 "Alpha": src/a/y.ts (src/a/). plans.mergeFiles was not read in full, so a merge file may count: bad entry docs',
+    const found: PlanOverlap[] = [];
+    ok(
+      reservePlan(db, {
+        project,
+        plan: "gamma",
+        who: LEAD,
+        holder: "child",
+        ignore: [],
+        caseFold: false,
+        found,
+        now: 7,
+      }),
     );
+    const check = { ignore: [], caseFold: false, reason: "bad entry docs" };
+    expect(warnOverlaps(db, found, check, LEAD, 8).map((line) => line.split(". ").at(-1))).toEqual([
+      "plans.mergeFiles was not read in full, so a merge file may count: bad entry docs.",
+    ]);
   } finally {
     db.close();
     ops.close();
@@ -939,8 +1015,9 @@ test("L3: an overlap with a done plan that is not released says so, and what rel
   plan(db, "beta", ["src/a/x.ts"]);
   ok(reserve(db, "alpha"));
   ok(updateTask(db, alpha.id, { status: "done" }, LEAD, 5));
-  expect(why(reserve(db, "beta"))).toBe(
-    `#2 "beta" overlaps #1 "alpha" (done, not released: \`${COMMAND} herdr plans\` releases it when its pull request merges): src/a/x.ts (src/a/)`,
+  const [line] = reserveWarned(db, "beta").lines;
+  expect(line).toBe(
+    `Overlap: #1 "alpha" and #2 "beta" share src/a/ (src/a/x.ts). Leads: #1 session lead; #2 session lead. #1 "alpha" is finished and holds its files until its pull request merges or closes; \`${COMMAND} herdr plans\` then releases them. ${SECOND_RULE}`,
   );
 });
 
@@ -975,17 +1052,19 @@ test("the take through the task tools asks the session records of its own config
   }
 });
 
-test("a held plan with no file list and no branch diff refuses a reservation, naming the fix", () => {
+test("a held plan with no file list and no branch diff is warned of at a reservation, naming the fix, with no note", () => {
   const { db } = setup();
   const solo = plan(db, "solo", undefined, { who: OTHER });
   const beta = plan(db, "beta", ["src/b/"], { now: 2 });
   ok(updateTask(db, solo.id, { status: "in_progress" }, OTHER, 3));
-  expect(why(reserve(db, "beta"))).toBe(
-    '#1 "solo" is held with no file list: set its files first (task_update on #1 with files), or finish, park or drop it',
-  );
-  expect(leadOf(db, beta.id)).toBeNull();
+  expect(reserveWarned(db, "beta").lines).toEqual([
+    'Overlap unknown with #2 "beta": #1 "solo" has no file list, so no overlap with it can be ruled out; task_update #1 with files: the paths and folders it changes.',
+  ]);
+  expect(leadOf(db, beta.id)?.sessionId).toBe("lead");
+  expect([overlapNotes(db, solo.id), overlapNotes(db, beta.id)]).toEqual([[], []]);
   // Its branch diff is what it holds then, and a plan elsewhere is clear.
-  expect(ok(reserve(db, "beta", { extraFiles: { [solo.id]: ["lib/x.ts"] } })).lead).not.toBeNull();
+  ok(releasePlan(db, { project: "p", plan: "beta", who: LEAD, now: 12 }));
+  expect(reserveWarned(db, "beta", { extraFiles: { [solo.id]: ["lib/x.ts"] } }).lines).toEqual([]);
 });
 
 test("a held plan with a list still allows a disjoint reservation", () => {
@@ -1014,48 +1093,52 @@ function planStatus(w: ReturnType<typeof world>, slug: string) {
   }
 }
 
-test("a solo first start that overlaps a reserved plan is refused, and the plan stays queued", () => {
+test("a solo first start that overlaps a reserved plan starts, with the warning, and both plans get the note", () => {
   const w = world();
   laidPlan(w, LEAD, "alpha", ["src/a/"]);
   const beta = laidPlan(w, OTHER, "beta", ["src/a/x.ts"]);
   expect(ok(reserveIn(w, "alpha", LEAD)).lead).not.toBeNull();
-  const words = refused(startPhase(w, OTHER, beta.phase));
-  expect(words).toContain('"beta" cannot start, since it overlaps #1 "alpha": src/a/x.ts (src/a/)');
-  expect(words).toContain("Two plans that share a file never run at once");
-  expect(words).toContain('#1 "alpha" is reserved: wait until its pull request merges or closes');
-  expect(words).toContain("task_update with files");
-  expect(planStatus(w, "beta")).toBe("pending");
+  const answer = said(startPhase(w, OTHER, beta.phase));
+  expect(overlapLines(answer)).toEqual([
+    `Overlap: #1 "alpha" and #4 "beta" share src/a/ (src/a/x.ts). Leads: #1 session lead; #4 session other. ${SECOND_RULE}`,
+  ]);
+  expect(planStatus(w, "beta")).toBe("in_progress");
+  expect(notesIn(w, "#1")).toEqual(overlapLines(answer));
+  expect(notesIn(w, "#4")).toEqual(overlapLines(answer));
 });
 
-test("a solo first start that overlaps another session's plan in flight is refused", () => {
+test("a solo first start that overlaps another session's plan in flight starts, with the warning", () => {
   const w = world();
   const solo = laidPlan(w, LEAD, "solo", ["src/s/"]);
   const beta = laidPlan(w, OTHER, "beta", ["src/s/inner/"]);
   said(startPhase(w, LEAD, solo.phase));
   expect(planStatus(w, "solo")).toBe("in_progress");
-  expect(refused(startPhase(w, OTHER, beta.phase))).toContain('overlaps #1 "solo"');
-  expect(planStatus(w, "beta")).toBe("pending");
+  expect(overlapLines(said(startPhase(w, OTHER, beta.phase))).map(sharedWords)).toEqual([
+    '#1 "solo" and #4 "beta" share src/s/ (src/s/inner/)',
+  ]);
+  expect(planStatus(w, "beta")).toBe("in_progress");
 });
 
-test("a start of a plan with no file list is refused while a reserved plan is held, with the fix", () => {
+test("a start of a plan with no file list beside a reserved plan starts, with the fix and no note", () => {
   const w = world();
   laidPlan(w, LEAD, "alpha", ["src/a/"]);
   const beta = laidPlan(w, OTHER, "beta", []);
   expect(ok(reserveIn(w, "alpha", LEAD)).lead).not.toBeNull();
-  expect(refused(startPhase(w, OTHER, beta.phase))).toContain(
-    'has no file list, so it cannot be shown clear of #1 "alpha": set its files first (task_update with files)',
-  );
-  expect(planStatus(w, "beta")).toBe("pending");
+  expect(overlapLines(said(startPhase(w, OTHER, beta.phase)))).toEqual([
+    'Overlap unknown with #1 "alpha": #4 "beta" has no file list, so no overlap with it can be ruled out; task_update #4 with files: the paths and folders it changes.',
+  ]);
+  expect(planStatus(w, "beta")).toBe("in_progress");
+  expect([notesIn(w, "#1"), notesIn(w, "#4")]).toEqual([[], []]);
 });
 
-test("a solo user who never hands out a plan sees no new refusal", () => {
+test("a solo user who never hands out a plan sees no warning", () => {
   const w = world();
   const solo = laidPlan(w, LEAD, "solo", []);
-  said(startPhase(w, LEAD, solo.phase));
+  expect(overlapLines(said(startPhase(w, LEAD, solo.phase)))).toEqual([]);
   expect(planStatus(w, "solo")).toBe("in_progress");
-  // Another session's plan in flight is not a reserved plan: with no list, no refusal.
+  // Another session's plan in flight is not a reserved plan: with no list, no warning.
   const second = laidPlan(w, OTHER, "second", []);
-  said(startPhase(w, OTHER, second.phase));
+  expect(overlapLines(said(startPhase(w, OTHER, second.phase)))).toEqual([]);
   expect(planStatus(w, "second")).toBe("in_progress");
 });
 
@@ -1087,23 +1170,29 @@ test("a start disjoint from every held plan is allowed", () => {
   expect(planStatus(w, "beta")).toBe("in_progress");
 });
 
-test("a plan task started directly, and a task made in progress, are judged the same way", () => {
+test("a plan task started directly, and a task made in progress, are judged the same way; a repeat warns and adds no note", () => {
   const w = world();
   laidPlan(w, LEAD, "alpha", ["src/a/"]);
   laidPlan(w, OTHER, "beta", ["src/a/"]);
   expect(ok(reserveIn(w, "alpha", LEAD)).lead).not.toBeNull();
   const other = w.ops(OTHER);
   try {
-    expect(refused(other.call("update", { task: "#4", status: "in_progress" }))).toContain(
-      'overlaps #1 "alpha"',
-    );
+    const first = overlapLines(said(other.call("update", { task: "#4", status: "in_progress" })));
+    expect(first.map(sharedWords)).toEqual(['#1 "alpha" and #4 "beta" share src/a/']);
+    expect(planStatus(w, "beta")).toBe("in_progress");
+    // Parked, then started again by a task made running: the same warning, and no second note.
+    said(other.call("update", { task: "#4", status: "pending" }));
     expect(
-      refused(other.call("create", { subject: "Work", parent: "#5", status: "in_progress" })),
-    ).toContain('overlaps #1 "alpha"');
+      overlapLines(
+        said(other.call("create", { subject: "Work", parent: "#5", status: "in_progress" })),
+      ),
+    ).toEqual(first);
+    expect(notesIn(w, "#1")).toEqual(first);
+    expect(notesIn(w, "#4")).toEqual(first);
   } finally {
     other.close();
   }
-  expect(planStatus(w, "beta")).toBe("pending");
+  expect(planStatus(w, "beta")).toBe("in_progress");
 });
 
 const THIRD: Who = { sessionId: "third", pid: 7404, procStart: "74040" };
@@ -1133,11 +1222,20 @@ test("a phase started by a session that does not own the plan is judged like the
   const beta = laidPlan(w, OTHER, "beta", ["src/a/x.ts"]);
   expect(ok(reserveIn(w, "alpha", LEAD)).lead).not.toBeNull();
   // A third session starts the phase of OTHER's plan: the plan goes into flight all the same.
-  expect(refused(startPhase(w, THIRD, beta.phase))).toContain(
-    'cannot start, since it overlaps #1 "alpha": src/a/x.ts (src/a/)',
-  );
-  expect(statusOf(w, beta.phase)).toBe("pending");
-  expect(planStatus(w, "beta")).toBe("pending");
+  expect(overlapLines(said(startPhase(w, THIRD, beta.phase))).map(sharedWords)).toEqual([
+    '#1 "alpha" and #4 "beta" share src/a/ (src/a/x.ts)',
+  ]);
+  // Its running phase holds the plan; the plan task itself moves only for its owner's start.
+  expect(statusOf(w, beta.phase)).toBe("in_progress");
+  const db = w.store();
+  try {
+    expect(heldPlans(db, w.project, THIRD).map((h) => [h.plan.plan, h.why])).toEqual([
+      ["alpha", "reserved"],
+      ["beta", "in-flight"],
+    ]);
+  } finally {
+    db.close();
+  }
 });
 
 test("a step started in a plan that is not in flight is judged too, and a step in a running plan is not", () => {
@@ -1150,13 +1248,23 @@ test("a step started in a plan that is not in flight is judged too, and a step i
   const gammaStep = numberOf(w, "gamma step");
   const third = w.ops(THIRD);
   try {
-    expect(refused(third.call("update", { task: betaStep, status: "in_progress" }))).toContain(
-      'overlaps #1 "alpha"',
-    );
-    expect(statusOf(w, beta.phase)).toBe("pending");
-    expect(planStatus(w, "beta")).toBe("pending");
-    // A disjoint plan runs; its later steps need no new judgment.
-    said(third.call("update", { task: gamma.phase, status: "in_progress" }));
+    expect(
+      overlapLines(said(third.call("update", { task: betaStep, status: "in_progress" }))).map(
+        sharedWords,
+      ),
+    ).toEqual(['#1 "alpha" and #4 "beta" share src/a/ (src/a/x.ts)']);
+    expect(statusOf(w, betaStep)).toBe("in_progress");
+    // The running step holds the plan: a second step's start in it is not judged again.
+    said(third.call("create", { subject: "beta second", parent: beta.phase }));
+    expect(
+      overlapLines(
+        said(third.call("update", { task: numberOf(w, "beta second"), status: "in_progress" })),
+      ),
+    ).toEqual([]);
+    // A disjoint plan runs with no warning.
+    expect(
+      overlapLines(said(third.call("update", { task: gamma.phase, status: "in_progress" }))),
+    ).toEqual([]);
     said(third.call("update", { task: gammaStep, status: "in_progress" }));
     expect(planStatus(w, "gamma")).toBe("in_progress");
   } finally {
@@ -1164,18 +1272,21 @@ test("a step started in a plan that is not in flight is judged too, and a step i
   }
 });
 
-test("the way out of an overlap follows why the plan is held: a reserved plan merges, a running one is done or parked", () => {
+test("a start beside a running and a reserved plan warns of each, and notes each pair", () => {
   const w = world();
   const solo = laidPlan(w, LEAD, "solo", ["src/s/"]);
   laidPlan(w, OTHER, "alpha", ["src/a/"]);
   const beta = laidPlan(w, THIRD, "beta", ["src/a/x.ts", "src/s/y.ts"]);
   said(startPhase(w, LEAD, solo.phase));
   expect(ok(reserveIn(w, "alpha", OTHER)).lead).not.toBeNull();
-  const words = refused(startPhase(w, THIRD, beta.phase));
-  expect(words).toContain('#1 "solo" is running: wait until it is done or parked');
-  expect(words).toContain("if its session is gone, take it (task_take), or park or drop it");
-  expect(words).toContain('#4 "alpha" is reserved: wait until its pull request merges or closes');
-  expect(words).toContain("or change this plan's files (task_update with files)");
+  const lines = overlapLines(said(startPhase(w, THIRD, beta.phase)));
+  expect(lines.map(sharedWords)).toEqual([
+    '#1 "solo" and #7 "beta" share src/s/ (src/s/y.ts)',
+    '#4 "alpha" and #7 "beta" share src/a/ (src/a/x.ts)',
+  ]);
+  expect(notesIn(w, "#1")).toEqual(lines.slice(0, 1));
+  expect(notesIn(w, "#4")).toEqual(lines.slice(1));
+  expect(notesIn(w, "#7")).toEqual(lines);
 });
 
 /** Ops that count how often the files check is read, and what it says. */
@@ -1225,10 +1336,14 @@ test("a start is judged with the files check the caller read: plans.mergeFiles a
   const folding = countingOps(w, THIRD, { ignore: ["CHANGELOG.md"], caseFold: true });
   try {
     // The merge file takes no part, so beta is clear of alpha; gamma differs from alpha only in case.
-    said(ignoring.ops.call("update", { task: beta.phase, status: "in_progress" }));
     expect(
-      refused(folding.ops.call("update", { task: gamma.phase, status: "in_progress" })),
-    ).toContain('overlaps #1 "alpha": src/a.ts (src/A.ts)');
+      overlapLines(said(ignoring.ops.call("update", { task: beta.phase, status: "in_progress" }))),
+    ).toEqual([]);
+    expect(
+      overlapLines(
+        said(folding.ops.call("update", { task: gamma.phase, status: "in_progress" })),
+      ).map(sharedWords),
+    ).toEqual(['#1 "alpha" and #7 "gamma" share src/A.ts (src/a.ts)']);
   } finally {
     ignoring.ops.close();
     folding.ops.close();
@@ -1244,22 +1359,21 @@ test("a task created already running puts its plan into flight, and is judged li
   try {
     // A third session creates a running task under OTHER's phase, beside the reserved plan.
     expect(
-      refused(
-        third.call("create", { subject: "sneak", parent: beta.phase, status: "in_progress" }),
-      ),
-    ).toContain('cannot start, since it overlaps #1 "alpha": src/a/x.ts (src/a/)');
+      overlapLines(
+        said(third.call("create", { subject: "sneak", parent: beta.phase, status: "in_progress" })),
+      ).map(sharedWords),
+    ).toEqual(['#1 "alpha" and #4 "beta" share src/a/ (src/a/x.ts)']);
   } finally {
     third.close();
   }
-  // Nothing was stored: no task, and the plan holds nothing.
+  // The task is stored, and its plan is held beside the reserved one.
   const db = w.store();
   try {
-    expect(allTasks(db, w.project).some((t) => t.subject === "sneak")).toBe(false);
-    expect(heldPlans(db, w.project, THIRD).map((h) => h.plan.plan)).toEqual(["alpha"]);
+    expect(allTasks(db, w.project).some((t) => t.subject === "sneak")).toBe(true);
+    expect(heldPlans(db, w.project, THIRD).map((h) => h.plan.plan)).toEqual(["alpha", "beta"]);
   } finally {
     db.close();
   }
-  expect(planStatus(w, "beta")).toBe("pending");
 });
 
 test("a task created running in a plan clear of every held plan is allowed, and holds the plan", () => {
@@ -1284,7 +1398,7 @@ test("a task created running in a plan clear of every held plan is allowed, and 
   }
 });
 
-test("a step started in a plan holds the plan, so a later reservation that overlaps is refused", () => {
+test("a step started in a plan holds the plan, so a later reservation that overlaps is warned of", () => {
   const w = world();
   laidPlan(w, OTHER, "beta", ["src/b/"]);
   laidPlan(w, LEAD, "alpha", ["src/b/inner/"]);
@@ -1305,9 +1419,9 @@ test("a step started in a plan holds the plan, so a later reservation that overl
   } finally {
     db.close();
   }
-  expect(why(reserveIn(w, "alpha", LEAD))).toBe(
-    '#4 "alpha" overlaps #1 "beta": src/b/inner/ (src/b/)',
-  );
+  expect(reserveWarnedIn(w, "alpha", LEAD).map(sharedWords)).toEqual([
+    '#1 "beta" and #4 "alpha" share src/b/ (src/b/inner/)',
+  ]);
 });
 
 const DAY = 86400000;
@@ -1428,24 +1542,29 @@ test("a step reopened, or a running task moved into a plan, is judged like a sta
   expect(ok(reserveIn(w, "alpha", LEAD)).lead).not.toBeNull();
   const loose = numberOf(w, "loose");
   const again = w.ops(THIRD);
+  const warned = ['#1 "alpha" and #4 "beta" share src/a/ (src/a/x.ts)'];
   try {
-    expect(refused(again.call("update", { task: step, status: "in_progress" }))).toContain(
-      '"beta" cannot start, since it overlaps #1 "alpha": src/a/x.ts (src/a/)',
-    );
-    expect(refused(again.call("update", { task: loose, parent: beta.phase }))).toContain(
-      '"beta" cannot start, since it overlaps #1 "alpha": src/a/x.ts (src/a/)',
-    );
+    expect(
+      overlapLines(said(again.call("update", { task: step, status: "in_progress" }))).map(
+        sharedWords,
+      ),
+    ).toEqual(warned);
+    // Closed again, beta holds nothing; the running loose task moved in starts it once more.
+    said(again.call("done", { task: step, evidence: "ran it again" }));
+    expect(
+      overlapLines(said(again.call("update", { task: loose, parent: beta.phase }))).map(
+        sharedWords,
+      ),
+    ).toEqual(warned);
   } finally {
     again.close();
   }
-  // Neither write landed: the step stays done, the loose task stays outside the plan.
-  expect(statusOf(w, step)).toBe("done");
+  // Both writes landed: the loose task is in the plan, which runs beside the reserved one.
   const db = w.store();
   try {
-    expect(allTasks(db, w.project).find((t) => t.subject === "loose")?.plan).toBeNull();
-    expect(heldPlans(db, w.project, LEAD).map((h) => h.plan.plan)).toEqual(["alpha"]);
+    expect(allTasks(db, w.project).find((t) => t.subject === "loose")?.plan).toBe("beta");
+    expect(heldPlans(db, w.project, LEAD).map((h) => h.plan.plan)).toEqual(["alpha", "beta"]);
   } finally {
     db.close();
   }
-  expect(planStatus(w, "beta")).toBe("pending");
 });

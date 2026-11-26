@@ -5,7 +5,7 @@ import { PLUGIN } from "../build-info/names";
 import { TASKS_SERVER_NAME } from "../mcp/task-server-name";
 import { createTaskOps, type TaskOpsOptions } from "./ops";
 import { READ_ONLY_OPERATIONS, type TaskOperation, taskSchemas } from "./schemas";
-import { TASK_TOOL } from "./words";
+import { OVERLAP_WARNS, TASK_TOOL } from "./words";
 
 export const TASK_SERVER_INSTRUCTIONS = `These tools are your session's task list. Work tasks stay on this machine.
 A step owed before or after a deploy to prod or staging is a deploy task (kind prod or staging): its file travels with your branch, so commit it. Before any deploy, production or database work, list them (${TASK_TOOL.list} with scope project); close each with evidence (/${PLUGIN}:tasks).
@@ -16,7 +16,7 @@ Finish or drop every blocking task before marking its parent done.
 Three layers: plan › phase › task. A non-blocking task holds nothing; a task blocked by an open task waits for it.
 A plan holds at most plans.maxPhases phases, and a phase starts only once it holds tasks. Lay phases in any of your plans, up front; run one plan at a time: starting work in a plan puts it in flight, and a start in another plan is refused until the first is finished or parked (park = its plan task to pending, once its phases stop; resume = start a phase again). A later ask waits as a task under its plan (parent = the plan's #n). A task made with no plan and no parent is loose: a small fix needs no plan, and it never joins or starts one.
 A step of a phase closes done with evidence, or dropped with a note that gives the reason. A phase with a recorded branch closes done only once that branch has a commit past its base and is in the plan branch.
-A plan task holds its file list (files on task_create or task_update): repo-relative paths, a folder ends in /; a plan is handed to a child only when no held plan's files overlap.
+A plan task holds its file list (files on task_create or task_update): repo-relative paths, a folder ends in /. Plans whose files overlap may run at once: ${OVERLAP_WARNS}.
 Save notes as you go with ${TASK_TOOL.note}.`;
 const descriptions: Record<TaskOperation, string> = {
   take: "Take a plan or task into the calling session. Live claims need force; a refusal changes nothing.",
@@ -28,7 +28,8 @@ const descriptions: Record<TaskOperation, string> = {
   list: "List the caller's tasks as a tree, or list the plan or project (scope project also lists the open deploy tasks).",
   get: "Read a task, its notes and its history: each change with its time, the values before and after, and the session that made it. Use offset to read the next part; history true also prints every earlier description.",
   search: "Search work tasks and deploy tasks.",
-  delete: "Delete a mistaken task with no notes or tasks, or an untracked deploy task file.",
+  delete:
+    "Delete a mistaken task with no notes of its own (the kit's Overlap: notes do not count) or tasks, or an untracked deploy task file.",
 };
 
 export function createTaskServer(options: TaskOpsOptions = {}) {

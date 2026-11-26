@@ -5745,7 +5745,7 @@ var COMMAND = "cc-smart-dev-kit";
 
 // src/build-info/index.ts
 var info = {
-  version: "6.6.0",
+  version: "6.7.0",
   repo: "sellanybiz/cc-smart-dev-kit",
   dependencies: [
     {
@@ -7747,6 +7747,12 @@ function checkCcSmartDevKitConfig(raw, where, pluginVersion = VERSION) {
 
 // src/path-compare.ts
 var IGNORE_CASE = process.platform === "win32";
+
+// src/setup/lock.ts
+var FALLBACK_STALE_MS = 10 * 60 * 1000;
+
+// src/workflow/reviews.ts
+var START_KEPT_MS = 24 * 60 * 60 * 1000;
 // src/setup/launcher.ts
 var LAUNCHER_NAME = "cc-smart-dev-kit";
 var LAUNCHER_IN_SHELL = `"$HOME/.local/bin/${LAUNCHER_NAME}"`;
@@ -7757,9 +7763,6 @@ var FIND_INSTALL_JS = [
   "if(!e)process.exit(1);",
   "process.stdout.write(e.installPath);"
 ].join("");
-
-// src/setup/lock.ts
-var FALLBACK_STALE_MS = 10 * 60 * 1000;
 
 // src/update/state.ts
 var CHECK_INTERVAL_MS = 60 * 60 * 1000;
@@ -7798,7 +7801,7 @@ function parseWorkflowText(text, file) {
 }
 
 // src/entries/config-check.ts
-var FINGERPRINT = "4823944e2b30c1e4a49af5e0fe9abc4b1b32e9d4d5e184fab4055002e51367ce";
+var FINGERPRINT = "e8f36a50af9582ba2986fcdc57a830efb02c05b6c3ee3fb6e5eb73c29a6778d5";
 function answerOf(parse, isConfigError) {
   try {
     return { ok: true, value: parse(), fingerprint: FINGERPRINT };

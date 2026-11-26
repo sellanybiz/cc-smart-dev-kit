@@ -6,6 +6,7 @@ import { readFileSync, realpathSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { isInside } from "../path-compare";
 import { gitEnv } from "../project/git-env";
+import { COMMIT_SHA } from "../workflow/reviews";
 import type { Env } from "./run";
 
 // The path tests live in their one home, `src/path-compare.ts`; the hooks have always imported
@@ -35,7 +36,9 @@ export const GUARD_GIT_TIMEOUT_MS = 5_000;
 /**
  * A git command in `cwd`, without the GIT_* variables that point at another repo. `own` is set
  * after those are dropped: the variables this one call needs on purpose (a temporary object
- * folder, `src/workflow/review-cover.ts`), never ones inherited from outside.
+ * folder, `src/workflow/review-cover.ts`), never ones inherited from outside. `input` is the
+ * text git reads on stdin, as UTF-8 bytes exactly (`hash-object --stdin`, `mktree`); without it
+ * git reads nothing.
  */
 export function runGit(
   cwd: string,
@@ -43,16 +46,35 @@ export function runGit(
   env: Env,
   timeoutMs = 15_000,
   own: Record<string, string> = {},
+  input?: string,
 ): GitRun {
-  return spawnGit(cwd, args, env, timeoutMs, own, true);
+  return spawnGit(cwd, args, env, timeoutMs, own, true, input);
 }
 
 /**
  * `runGit`, with stdout exactly as git wrote it. For `-z` output, where a name may start or
  * end with a space: trimming would cut it off the first or the last name.
  */
-export function runGitRaw(cwd: string, args: string[], env: Env, timeoutMs = 15_000): GitRun {
-  return spawnGit(cwd, args, env, timeoutMs, {}, false);
+export function runGitRaw(
+  cwd: string,
+  args: string[],
+  env: Env,
+  timeoutMs = 15_000,
+  own: Record<string, string> = {},
+): GitRun {
+  return spawnGit(cwd, args, env, timeoutMs, own, false);
+}
+
+/** Paths per git call, so a long list stays far below the system's argument limit. */
+const PATHS_PER_GIT_CALL = 200;
+
+/** `paths` cut into the lists one git call each names, `PATHS_PER_GIT_CALL` at most; none for none. */
+export function pathBatches(paths: readonly string[]): string[][] {
+  const batches: string[][] = [];
+  for (let at = 0; at < paths.length; at += PATHS_PER_GIT_CALL) {
+    batches.push(paths.slice(at, at + PATHS_PER_GIT_CALL));
+  }
+  return batches;
 }
 
 function spawnGit(
@@ -62,12 +84,49 @@ function spawnGit(
   timeoutMs: number,
   own: Record<string, string>,
   trim: boolean,
+  input?: string,
 ): GitRun {
+  const bytes = input === undefined ? undefined : new TextEncoder().encode(input);
+  const run = spawnGitBytes(cwd, args, env, timeoutMs, own, bytes);
+  // `ignoreBOM`: a byte order mark git wrote stays in the text, as a file's own first character.
+  const out = new TextDecoder("utf-8", { ignoreBOM: true }).decode(run.out);
+  return { ...run, out: trim ? out.trim() : out };
+}
+
+/** What `runGitBytes` answers: a `GitRun` whose stdout is the bytes git wrote. */
+export interface GitBytesRun extends Omit<GitRun, "out"> {
+  out: Uint8Array;
+}
+
+/**
+ * `runGit` in bytes both ways: `input` and stdout exactly as git reads and writes them, never
+ * decoded. For a tree listing (`ls-tree -z`, `mktree -z`), whose names are any bytes: a UTF-8
+ * round trip renames one that is not UTF-8.
+ */
+export function runGitBytes(
+  cwd: string,
+  args: string[],
+  env: Env,
+  timeoutMs = 15_000,
+  input?: Uint8Array,
+): GitBytesRun {
+  return spawnGitBytes(cwd, args, env, timeoutMs, {}, input);
+}
+
+/** The one blocking spawn of git: bytes in, bytes out. */
+function spawnGitBytes(
+  cwd: string,
+  args: string[],
+  env: Env,
+  timeoutMs: number,
+  own: Record<string, string>,
+  input?: Uint8Array,
+): GitBytesRun {
   try {
     const result = Bun.spawnSync(["git", ...args], {
       cwd,
       env: { ...gitEnv(env), ...own },
-      stdin: "ignore",
+      stdin: input ?? "ignore",
       stdout: "pipe",
       stderr: "pipe",
       timeout: timeoutMs,
@@ -76,11 +135,10 @@ function spawnGit(
     });
     const err = result.signalCode ? GIT_TIMED_OUT : result.stderr.toString().trim();
     const code = result.signalCode ? null : result.exitCode;
-    const out = result.stdout.toString();
-    return { ok: result.exitCode === 0, out: trim ? out.trim() : out, err, code };
+    return { ok: result.exitCode === 0, out: result.stdout, err, code };
   } catch (error) {
     const err = error instanceof Error ? error.message : String(error);
-    return { ok: false, out: "", err, code: null };
+    return { ok: false, out: new Uint8Array(), err, code: null };
   }
 }
 
@@ -125,6 +183,19 @@ export async function runGitAsync(
     const err = error instanceof Error ? error.message : String(error);
     return { ok: false, out: "", err, code: null };
   }
+}
+
+/**
+ * The arguments of the call that asks which commit `rev` names; `commitIn` reads its answer.
+ * Each caller runs it its own way (sync or async, with its own time limit).
+ */
+export function commitArgs(rev: string): string[] {
+  return ["rev-parse", "--verify", "--quiet", `${rev}^{commit}`];
+}
+
+/** The full commit id a `commitArgs` call answered, or null when git named none. */
+export function commitIn(run: GitRun): string | null {
+  return run.ok && COMMIT_SHA.test(run.out) ? run.out : null;
 }
 
 /**

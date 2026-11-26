@@ -13,10 +13,19 @@
  * One `git grep` finds the claims, one `git diff` the added lines, and, only when the diff defines
  * a claimed name, one `git grep` at HEAD finds every file that defines those names. The cost is
  * linear in the size of the repository and the diff, never one git call per file.
+ *
+ * **No local attribute file changes what is read.** A checkout's own attribute files
+ * (`.git/info/attributes`, a `core.attributesFile`) are no commit, and a session could write one
+ * to hide a claim or a hit from the reviewer. So every file is read as text (`-a`, `--text`, no
+ * textconv), whatever its attributes call it, and the files left out as generated are the ones
+ * the base's own commit marks, asked of that commit alone (`project/generated.ts`) for the files
+ * the run found.
  */
 import { cappedHookList } from "../hooks/capped-list";
-import { type GitRun, runGitRaw } from "../hooks/git";
+import { type GitRun, runGit, runGitRaw } from "../hooks/git";
 import type { Env } from "../hooks/run";
+import { readGenerated } from "../project/generated";
+import { COMMIT_SHA } from "./reviews";
 
 /**
  * The phrases that make a sentence a claim, lower case (`git grep -i` finds them in any case).
@@ -84,15 +93,6 @@ const SKIPPED_PATHS: readonly string[] = [
 ];
 
 /**
- * The files a project marks generated (`linguist-generated`, set or `true`): the mark the review
- * count leaves out too (`review-cover.ts`), read here as git's attribute pathspec.
- */
-const GENERATED_PATHS: readonly string[] = [
-  ":(exclude,attr:linguist-generated)",
-  ":(exclude,attr:linguist-generated=true)",
-];
-
-/**
  * Test files: a test that defines a claimed name builds a fixture, not a second home, and a claim
  * written in one is fixture text, not the project's own.
  */
@@ -109,8 +109,11 @@ const TEST_PATHS: readonly string[] = [
 
 const excluded = (paths: readonly string[]) => paths.map((path) => `:(exclude)${path}`);
 
-/** The pathspec of every git call here: every tracked file but the skipped, test and generated ones. */
-const PATHSPEC = [".", ...excluded(SKIPPED_PATHS), ...excluded(TEST_PATHS), ...GENERATED_PATHS];
+/**
+ * The pathspec of every git call here: every tracked file but the skipped and test ones. The
+ * generated ones are left out after (`openBaseMarks`): an attribute pathspec reads local files.
+ */
+const PATHSPEC = [".", ...excluded(SKIPPED_PATHS), ...excluded(TEST_PATHS)];
 
 /** A name shorter than this is too common a word to treat as a symbol a claim names. */
 const MIN_NAME_LENGTH = 3;
@@ -324,6 +327,46 @@ function failure(run: GitRun): string {
   return run.err === "" ? `git exited with ${String(run.code)}` : run.err;
 }
 
+/** `items` without the ones in a file the base marks generated. */
+type Keep = <T>(items: readonly T[], fileOf: (item: T) => string) => T[];
+
+/** The repository's common git folder and the commit `rev` names, or null when git cannot say. */
+function sourceOf(
+  folder: string,
+  rev: string,
+  env: Env,
+): { commonDir: string; commit: string } | null {
+  const run = runGit(
+    folder,
+    ["rev-parse", "--path-format=absolute", "--git-common-dir", `${rev}^{commit}`],
+    env,
+    CLAIMS_GIT_TIMEOUT_MS,
+  );
+  const [commonDir, commit] = run.out.split("\n");
+  if (!run.ok || commonDir === undefined || commit === undefined) return null;
+  return COMMIT_SHA.test(commit) ? { commonDir, commit } : null;
+}
+
+/**
+ * What leaves out the files the diff's base (`base.ref`), else HEAD, marks generated, asked of
+ * that commit alone, each file once: a run with no base still reads committed marks only. When
+ * git names neither commit (no commit yet), or cannot answer (`readGenerated` has none), nothing
+ * is left out: the signal shows more, never less.
+ */
+function baseMarks(folder: string, env: Env, base: DiffBase): Keep {
+  const source =
+    ("ref" in base ? sourceOf(folder, base.ref, env) : null) ?? sourceOf(folder, "HEAD", env);
+  const marked = new Map<string, boolean>();
+  return (items, fileOf) => {
+    if (source === null) return [...items];
+    const asked = [...new Set(items.map(fileOf))].filter((file) => !marked.has(file));
+    for (const file of asked) marked.set(file, false);
+    const found = readGenerated(source.commonDir, source.commit, asked, env, CLAIMS_GIT_TIMEOUT_MS);
+    for (const file of found ?? []) marked.set(file, true);
+    return items.filter((item) => marked.get(fileOf(item)) !== true);
+  };
+}
+
 /**
  * The claims of the project in `folder`, and, when `base` names a ref, the lines `base...HEAD`
  * adds that write a second home of a symbol they name. A diff git cannot read is a sentence in
@@ -340,7 +383,7 @@ export function collectClaims(
       "grep",
       "-n",
       "-z",
-      "-I",
+      "-a",
       "-i",
       "-E",
       ...CLAIM_PHRASES.flatMap((phrase) => ["-e", phrase]),
@@ -352,7 +395,8 @@ export function collectClaims(
   );
   // git grep exits 1 when nothing matches: that is an answer, not a failure.
   if (!grep.ok && grep.code !== 1) return { error: `git grep failed: ${failure(grep)}` };
-  const claims = parseClaims(grep.ok ? grep.out : "");
+  const keep = baseMarks(folder, env, base);
+  const claims = keep(parseClaims(grep.ok ? grep.out : ""), (claim) => claim.file);
   if ("why" in base) return { claims, hits: [], diffWhy: base.why };
   const diff = runGitRaw(
     folder,
@@ -363,6 +407,8 @@ export function collectClaims(
       "--unified=0",
       "--no-color",
       "--no-ext-diff",
+      "--no-textconv",
+      "--text",
       "--no-renames",
       "--src-prefix=a/",
       "--dst-prefix=b/",
@@ -376,9 +422,10 @@ export function collectClaims(
   if (!diff.ok) {
     return { claims, hits: [], diffWhy: `git diff ${base.ref}...HEAD failed: ${failure(diff)}` };
   }
-  const definitions = claimedDefinitions(claims, parseAddedLines(diff.out));
+  const added = keep(parseAddedLines(diff.out), (line) => line.file);
+  const definitions = claimedDefinitions(claims, added);
   if (definitions.length === 0) return { claims, hits: [], diffWhy: null };
-  const defining = definingFiles(folder, env, new Set(definitions.map((one) => one.name)));
+  const defining = definingFiles(folder, env, new Set(definitions.map((one) => one.name)), keep);
   if ("error" in defining) return defining;
   return { claims, hits: secondHomes(definitions, defining), diffWhy: null };
 }
@@ -388,19 +435,21 @@ const AT_HEAD = "HEAD:";
 
 /**
  * The files that define each of `names` at HEAD, the commit the diff ends at: one `git grep` for
- * the names as whole words, each line it finds read with the same forms as an added line.
+ * the names as whole words, each line it finds read with the same forms as an added line. The
+ * files the base marks generated are left out (`keep`).
  */
 function definingFiles(
   folder: string,
   env: Env,
   names: ReadonlySet<string>,
+  keep: Keep,
 ): DefiningFiles | { error: string } {
   const grep = runGitRaw(
     folder,
     [
       "grep",
       "-z",
-      "-I",
+      "-a",
       "-w",
       "-F",
       ...[...names].flatMap((name) => ["-e", name]),
@@ -414,14 +463,18 @@ function definingFiles(
   if (!grep.ok && grep.code !== 1) {
     return { error: `git grep for the claimed names at HEAD failed: ${failure(grep)}` };
   }
-  const defining = new Map<string, Set<string>>();
+  const found: Array<{ file: string; name: string }> = [];
   for (const record of grep.ok ? grep.out.split("\n") : []) {
     const at = record.indexOf("\0");
     if (at === -1) continue;
     const file = record.slice(AT_HEAD.length, at);
     for (const name of definitionsIn(file, record.slice(at + 1))) {
-      if (names.has(name)) defining.set(name, (defining.get(name) ?? new Set()).add(file));
+      if (names.has(name)) found.push({ file, name });
     }
+  }
+  const defining = new Map<string, Set<string>>();
+  for (const { file, name } of keep(found, (one) => one.file)) {
+    defining.set(name, (defining.get(name) ?? new Set()).add(file));
   }
   return defining;
 }

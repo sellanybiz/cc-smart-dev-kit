@@ -104,16 +104,21 @@ code starts a mode: `/cc-smart-dev-kit:plan-task` § 6 asks under `ask`, and
 
 **`plans.mergeFiles` and `plans.appendOnly` live in the project's file alone and count only as
 committed.** `mergeFiles` is a list of paths every plan touches and each merge settles (a version
-manifest, a changelog, a lockfile, build output); the plans' overlap check (`docs/design/tasks.md`
-§ Plans handed to children) leaves them out. `appendOnly` (6.3.0) is a list of folders where plans
+manifest, a changelog, a lockfile, build output); the plans' overlap warning (`docs/design/tasks.md`
+§ Plans handed to children; an overlap warns and never refuses since 6.7.0) leaves them out, and
+when an overlap's shared files include ones the base marks `linguist-generated` the warning names
+them, and prints the ready `workflow propose plans.mergeFiles '<current list>,<those files>'` line
+only when listing them would settle those files (`docs/design/tasks.md` § Plans handed to children,
+"The warning and the note"). `appendOnly` (6.3.0) is a list of folders where plans
 add new files (a migrations folder): inside one, two plans overlap only when they list the same
-file. A session that could widen either would lift its own check, so the store and herdr never use
-the working copy. `resolvePlanFiles` (`src/workflow/resolve.ts`) reads both from one read of the
+file. A session that could widen either would hide its own plan's overlaps from every other
+session, so the store and herdr never use the working copy. `resolvePlanFiles` (`src/workflow/resolve.ts`) reads both from one read of the
 copy on `origin/<worktrees.base>`, through the review gate's own committed read
 (`readCommittedConfig`), and `planFilesCheck` (`src/tasks/files-check.ts`) calls it before any
 write lock: one reader of the committed setting. With no base, no remote ref, no committed file or
 a bad entry, the lists are empty or short and come back with a reason, so more paths count as
-overlaps, never fewer. `ResolvedWorkflow.plans.mergeFiles` and `.appendOnly` are only the project
+overlaps, never fewer, and the warning says why (and prints no propose line, since the current
+list is not known in full). `ResolvedWorkflow.plans.mergeFiles` and `.appendOnly` are only the project
 config passed in, so no caller reads them for a decision; `workflow show` prints each beside a
 line with the committed list the plan tools read. Both are in `PLAN_KEYS`, so
 `workflow set` refuses it inside Claude Code and the person commits it themselves (`propose` stays
@@ -306,37 +311,67 @@ and the plugin never writes the project's main checkout. `cc-smart-dev-kit workf
 <setting> <value>` (and the portal's Workflow card, through the same command in a child):
 
 1. finds the project (`--folder`, else the current folder) and its `worktrees.base`;
-2. fetches `origin/<base>` and reads **the value the base commits** (`resolveWorkflow` over the
-   file at `origin/<base>`, not this checkout's working copy: an uncommitted edit here is not a
-   policy) — one the base already holds, or an `--unset` of one it does not set, ends with one
-   line and no branch. It checks `gh` too (`ghLoginState`: installed, and `gh repo view` answers
-   for this repository), so no branch is made for a pull request that could not open;
-3. cuts a branch and a worktree from `origin/<base>` in Claude Code's own layout: the folder
-   `.claude/worktrees/workflow-<setting>-<YYYYMMDD>` on the branch `worktree-<folder name>`,
-   so the auto-clean removes it after the merge (the same day's second change takes `-2`); it
-   refuses when the base's own commit has no project file — a change counts only once merged;
-4. checks that the new worktree holds its **own** `.claude/cc-smart-dev-kit.json` before writing
-   — the guard that keeps the writer's fallback (`loadProjectConfig` reads the main checkout's
-   file when a worktree has none) from ever writing the person's checkout — then writes the one
-   value with `writeProjectSetting`, the writer `set --project` uses, and refuses unless the
-   worktree's own `git status` shows the change;
-5. commits (the person's identity, `workflow: <setting> <from> → <to>`, where `from` is the
-   project's own value or `(unset)`: the person's defaults are never published), pushes, and
-   opens the pull request with `gh pr create` into the base, with a body saying it counts once
-   merged. `--json` prints `{ url, branch, worktree, setting, from, to }`.
+2. fetches `origin/<base>` and reads, from **one** commit (`origin/<base>` as the fetch left it),
+   the project's file exactly as committed (`baseFile`); every later step reads that commit and
+   that text only, so a fetch that moves the ref mid-run changes nothing. A commit with no project
+   file has nothing to propose into, and the run refuses. It reads **the value the base commits**
+   (`resolveWorkflow` over that text, not this checkout's working copy: an uncommitted edit here
+   is not a policy) — one the base already holds, or an `--unset` of one it does not set, ends
+   with one line and no branch. It checks `gh` too (`ghLoginState`: installed, and `gh repo view`
+   answers for this repository), so no branch is made for a pull request that could not open;
+3. applies the one value to that text with `editProjectSetting` (`write.ts`), the pure step
+   `writeProjectSetting` (`set --project`) wraps with its backup and atomic write: it validates
+   the value, raises `requires`, and refuses a setting that is not the project's. One writer,
+   never a second one;
+4. makes the commit with git plumbing in the main checkout's own repository, with no worktree,
+   no checkout and no index: the new text as a blob (`hash-object -w --stdin`, so no clean filter
+   changes a byte), the `.claude` tree and the root tree with that one entry replaced, the file's
+   mode kept (`mktree --missing`, one per folder, innermost first), then `commit-tree` on the base
+   commit, with the person's identity, the title `workflow: <setting> <from> → <to>` (`from` is the
+   project's own value or `(unset)`: the person's defaults are never published) and
+   `MADE_WITHOUT_HOOKS` as its body. `-S` is added when `commit.gpgSign` is on, since
+   `commit-tree` does not read that setting;
+5. pushes it to a new branch, `worktree-workflow-<setting>-<YYYYMMDD>` (the same day's second
+   change takes `-2`; the prefix stays so proposals from before 6.7.0 keep the day's count), with
+   `git push --no-verify --porcelain --force-with-lease=refs/heads/<branch>:`: the empty lease
+   lets the push create the branch only, so a name already on origin is refused (`[rejected]
+   (stale info)`), never overwritten, and the run tries the next free name once. The name picks
+   read the push side (`git remote get-url --push origin`), so a separate `pushurl` is asked
+   where the push goes, not where the fetch reads. Then it opens the
+   pull request with `gh pr create` into the base, with a body saying what changed, any raised
+   `requires`, that it counts once merged, and `MADE_WITHOUT_HOOKS`. `--json` prints one
+   `ProposedJson` line, `{ branch, from, setting, to, url }` (an unset value is `null`), and
+   nothing on a refusal.
+
+**No project git hook runs** (6.7.0). A project whose pre-commit hook needs its
+installed packages (lefthook, say) made the old worktree-and-commit path fail. With no checkout
+and `--no-verify` on the push, no pre-commit, commit-msg, post-checkout or pre-push hook runs. The
+cost, said in the output, the commit message and the body (`MADE_WITHOUT_HOOKS`): a line a hook
+adds (a sign-off) is missing, and a clean filter on the file did not run; the review and CI are
+its gate. **A known limit:** a project `reference-transaction` hook still runs, since git runs it
+on every ref update and `--no-verify` does not cover it: on the fetch (it updates
+`origin/<base>`), on the push and on the take-back delete (each updates the local
+remote-tracking ref). A failing one at the fetch stops the run there, before anything is made.
+lefthook and husky do not install one by default.
 
 A setting the project's file cannot hold — the status-line and update-hold switches, which are
 the person's, per machine — is refused before the fetch, with the command that does change it.
 
-A step that fails after the branch exists takes the worktree, the branch, and the pushed
-branch back, and the line says what is left if any of that fails. Two exceptions, both to
-avoid destroying what may be another run's: a `gh pr create` that does not answer in time
-leaves the pushed branch and the pull request it may have made, and a name another proposal
-took between the check and the add is skipped for the next free one rather than reused. The
-command pushes a branch and opens a pull request in a child no hook sees. Until 5.6.x the shell
-judge asked the person first when `allowPush` was off or `openPr` short of `ready`; that judge is
-gone (§ Retired in 6.0.0 in `docs/design/hooks.md`). Every key may be proposed, inside Claude Code
-or outside it: the pull request's review is the gate.
+**Nothing is left half made.** A step that fails after the push deletes the branch on origin
+again — leased at this run's commit, with `--no-verify` and `--porcelain`, so it goes where the
+push went (a separate `pushurl` too) and a branch another run pushed under the name is never
+deleted — and the line says what is left if that fails. Each run's commit carries its own
+`Proposal-Id:` trailer, so two runs in the same second never make the same commit and a lease can
+only ever match this run's own push. A push or a delete is judged by git's porcelain line for its
+ref, not by the exit code alone: a push that landed but exited non-zero goes on, a delete that
+worked is reported as deleted, and a name the delete finds absent or someone else's is no branch
+of this run. A `gh pr create` that does not answer in time leaves the pushed branch, since
+the pull request may be open. `PROPOSE_WORST_CASE_MS` sums the step limits, so a caller that runs
+the command in a child (the portal) lets its take-back run. The command pushes a branch and
+opens a pull request in a child no hook sees. Until 5.6.x the shell judge asked the person first
+when `allowPush` was off or `openPr` short of `ready`; that judge is gone (§ Retired in 6.0.0 in
+`docs/design/hooks.md`). Every key may be proposed, inside Claude Code or outside it: the pull
+request's review is the gate.
 
 ## The review record
 
@@ -351,7 +386,8 @@ written by hand — still reads and counts for its exact commit only. An entry a
 wrote (`sha → time`) names no writer and counts for nothing: that commit has no review.
 
 **A review counts for its branch and the fixes after it (D17).** A review of commit R covers a
-later head H when R's record names H's branch and the change made since R, **the base's own
+later head H when R's record names H's branch, or a local branch whose tip holds H (6.7.0: a
+builder's branch pushed under another name), and the change made since R, **the base's own
 changes taken out**, stays within the limits the base commits (`workflow.fixesAfterReview`,
 default 200 lines, 10 files, 20%): covered while its lines are at most `lines` or `percent`% of
 the reviewed change's lines, whichever is more, **and** its files at most `files` or `percent`%
@@ -370,18 +406,54 @@ review of H itself covers H on any branch, as before. The one home is
   deleted; files are paths.
 - So the base merged into the branch, or a rebase that only moved it, counts for nothing; a fix
   commit, a rebase that edits, a hand-resolved conflict and a new file count. A revert of the
-  reviewed change counts its whole size. A review on another branch never covers, so a stacked
-  pull request is not covered by the review of the branch below it.
+  reviewed change counts its whole size.
+- The candidates: a record on H's branch, and a record on a branch that holds H, from one
+  `git for-each-ref --contains=<H> --format=%(refname:lstrip=2) refs/heads` call (`lstrip=2`, since
+  `:short` prints `heads/<name>` when a tag shares the name), run only when some record is on
+  another branch. Never a `base..head` range: it let a squash-merged parent's review cover its
+  child. So a review on a branch that holds H nowhere never covers: a stacked pull request is not
+  covered by the review of the branch below it, and a branch merged into H's, or squash-merged
+  below it, is no candidate. With none, the reason is `no review is recorded for <H>, for an
+  earlier commit of <branch>, or on a local branch that holds <H>`.
 - A review whose change is already all in the base (`git diff --quiet B T`: its branch was
-  squash-merged and the name used again) is no candidate. Of several candidates, the covered one
-  with the smallest change is named; when none is covered, the reason is about the smallest.
-- Files the base marks `linguist-generated` (`git check-attr --source=origin/<base>`: the base's
+  squash-merged and the name used again) is no candidate. Candidates are measured newest first
+  (by `at`): when the caller's time runs out after one was found to cover, that one still covers
+  (`OutOfTime`). Of several measured, the covered one with the smallest change is named; when
+  none is covered, the reason is about the smallest.
+- Files the base marks `linguist-generated` (`git check-attr --source=<base commit>`: the base's
   attributes, so a pull request's own `.gitattributes` hides nothing; this repo marks
-  `plugin/dist/**`) are listed, not counted. A binary file in the change is never covered.
+  `plugin/dist/**`) are listed, not counted. **Only the base's committed marks count** (6.7.0,
+  `src/project/generated.ts`, the one home of that read): git also adds three local files on top
+  of a commit's attributes (gitattributes(5)), and a session could write any of them without a
+  commit. So each call runs in a throwaway git folder (`openBaseOnlyGit`): its own `GIT_DIR`, which
+  borrows the repository's objects through `objects/info/alternates` (no `info/attributes`, no
+  repository config); `-c core.attributesFile=<folder>/none`, a file that never exists (no
+  personal file, its XDG default included, on any git version) and `-c core.ignoreCase=false`;
+  `GIT_CONFIG_GLOBAL=<folder>/none` and `GIT_CONFIG_NOSYSTEM=1` (no personal or system config);
+  `GIT_CONFIG_COUNT=0` and an empty `GIT_CONFIG_PARAMETERS` (no config passed in the environment,
+  `attr.tree` included); `GIT_ATTR_SOURCE=<the base commit>` (an inherited one cannot point the
+  attributes at another tree; git 2.42 and later read it, an older git reads the folder's work
+  tree, which holds the same base files); and `GIT_ATTR_NOSYSTEM=1` (no system file; no manual page
+  lists it, git's `attr.c` reads it, and a test cannot write the system file). **What counts as binary is the base's too** (6.7.0): the
+  `git diff --numstat` runs in that folder's own work tree, which a sparse `read-tree` fills with
+  the base's `.gitattributes` files and nothing else, so a local `* binary` cannot zero a text
+  change's lines, and a local mark cannot make a real binary count as text. A binary file in the
+  change is never covered. The replay's `merge-tree`, and the diff that compares its result, run
+  in that folder too, so a local `merge=<driver>` attribute or a driver in the local config can
+  neither shape the replayed tree nor run a command. Every git call of the measure reads the
+  history as committed (`committedHistory` in `src/project/generated.ts`):
+  `GIT_NO_REPLACE_OBJECTS=1`, and `GIT_GRAFT_FILE` and `GIT_SHALLOW_FILE` at a file that never
+  exists, so no local replace ref, graft (`info/grafts`) or shallow file can stand in for a
+  reviewed commit or move its merge base. In a real shallow clone the measure then cannot walk
+  past the cut, so it answers "not covered", as it did before. The
+  base's files go into that folder only once a review is a candidate, so a pull request no
+  review could cover pays nothing.
 - Anything it cannot read is "not covered", with the reason: the head or the reviewed commit not in
   this checkout ("fetch it"), no `origin/<base>`, the caller's time running out, or git older than
   2.40 (`check-attr --source` came in 2.40; `doctor` warns with one `!` line, and such a machine
-  matches the exact head only). It never fetches.
+  matches the exact head only). It never fetches: in a blobless or treeless partial clone, a blob
+  or tree the measure needs that is not local makes it "not covered" until that object is fetched,
+  since the throwaway folder has no promisor remote to fetch from.
 
 The limits come from this repo's own fix rounds: 10% of the reviewed change is covered, 105% and
 160% are not covered. A limit is a trade: up to 200 lines written after the review merge unread, which is the
@@ -459,7 +531,7 @@ the first start stays when a resumed agent starts again; a day-old start is drop
 it takes that start back and records **the start commit, on its branch** — never the commit the
 folder is on at the stop: a fix committed while the reviewer read is a fix it never saw, and it
 counts as change after the review like every later fix (D17, above). A stop with no start seen
-records nothing (one stderr line says to run the review again). The names are compared by
+records nothing (one stderr line says to run the review again; it lands in Claude Code's debug log, see below). The names are compared by
 `recordsReview` in `reviews.ts`, the one home of that question: a `plugin:name` exactly, a bare
 name only for an agent with no plugin prefix — Claude Code reports a plugin agent as
 `plugin:name` (code.claude.com/docs/en/hooks § SubagentStart), so another plugin's
@@ -470,10 +542,21 @@ not PostToolUse on the Agent tool**: on Claude Code 2.1.301 every Agent call run
 background — the tool call returns at launch, and the agent's end comes later — so a
 PostToolUse hook would record the commit before the reviewer had read a line. A plugin
 SubagentStop is allowed by `.claude/rules/hooks.md` because this hook touches no worktree;
-its SubagentStart cannot block a launch and adds no context. A run whose `cwd` is inside a
-subagent's own worktree records nothing: its branch is a fresh one from the base, never the
-commit a reviewer read. Success prints nothing at all; a record that cannot be written is one
-stderr line, exit 0. `cc-smart-dev-kit workflow review-done [--sha <commit>]` stays for the
+its SubagentStart cannot block a launch and adds no context. A run whose `cwd` is inside the
+review agent's **own** worktree records nothing: the innermost `.claude/worktrees/agent-<hex>`
+folder names its own `agent_id`, both read through `agentIdKey` (`inOwnWorktree`). Its branch is
+a fresh one from the base, never the commit a reviewer read. A session that stands in another
+agent's worktree, a builder's, records there like any folder (6.7.0; before, the folder's shape
+alone skipped it). Success prints nothing at all. A record that cannot be written is one stderr
+line, exit 0, and so is the stop of a listed reviewer that records nothing, with its reason: not a
+review run or no readable transcript (checked first, so a consult in its own worktree is told
+that), its own worktree (`run the reviewer without isolation`), no commit yet, or no start seen.
+A stop a block caused (`stop_hook_active`) says nothing again, and an agent with no `agent_id`
+stays silent, since its start cannot be matched to its stop. So every consult of a listed
+reviewer ends with one such line. **Neither the lead nor the person sees it:** Claude Code never
+shows a hook's stderr at exit 0 to Claude, and puts it only in its debug log
+(`docs/claude-code-contract.md`). What a session meets is the missing record, when it merges
+(`workflow merge-check`). `cc-smart-dev-kit workflow review-done [--sha <commit>]` stays for the
 person's own terminal and **refuses inside Claude Code** (`CLAUDECODE`): it resolves the
 commit with `git rev-parse` and records it `by` the person, which the judgment trusts whatever
 the list says; `cc-smart-dev-kit workflow show` prints whether the commit here has a record
@@ -513,20 +596,26 @@ that write a second home of what they name. It is a signal: it reads, prints and
 it finds. A claim with no guard is a finding (`code-structure` § 11), and this is the cheap way to
 see the claims and the second definitions that make them false.
 
-- **Two or three git calls.** The claims are the tracked, non-binary lines that hold a phrase of
+- **Two or three git calls.** The claims are the tracked lines that hold a phrase of
   `CLAIM_PHRASES` as whole words, in any case (`CLAIM_PHRASE`: "the one placeholder" is no claim).
   The diff is `git diff --unified=0 <base>...HEAD`. Every call reads through one pathspec
   (`PATHSPEC`), which skips lockfiles, build output (`BUILD_OUTPUT_FOLDERS`: `dist/`,
   `node_modules/`), minified files, source maps, a changelog and the kit's own `.claude/plans/` and
   `.claude/research/`, which describe what was true then (`HISTORY_FOLDERS`, named there since
-  `plansFolders` answers with real absolute paths a pathspec cannot take), the files the project
-  marks `linguist-generated`, the mark the review count reads too (`GENERATED_PATHS`, git's
-  attribute pathspec), and test files (`TEST_PATHS`): a claim written in a test is fixture text, and
-  a test that defines a claimed name builds a fixture, not a second home. Only when the diff defines
-  a claimed name does a third call run: one `git grep` at HEAD for those names as whole words. No
-  git call is made per file, so the cost grows with the repository and the diff only. The added
-  lines are read by each hunk's own line counts, so an added line that starts with `++` is never
-  taken for a file header.
+  `plansFolders` answers with real absolute paths a pathspec cannot take), and test files
+  (`TEST_PATHS`): a claim written in a test is fixture text, and a test that defines a claimed name
+  builds a fixture, not a second home. Only when the diff defines a claimed name does a third call
+  run: one `git grep` at HEAD for those names as whole words. No git call is made per file, so the
+  cost grows with the repository and the diff only. The added lines are read by each hunk's own
+  line counts, so an added line that starts with `++` is never taken for a file header.
+- **Generated files, from one commit's marks only** (6.7.0). An attribute pathspec reads a
+  checkout's local attribute files, which a session can write to hide a claim or a hit. So the
+  files a call found are asked after it, each once, of one commit alone through
+  `src/project/generated.ts` (the read the review count uses): the diff's base when it resolves,
+  else HEAD. A file that commit marks `linguist-generated` is dropped; git older than 2.40 marks
+  nothing, so the signal shows more, never less. Every file is read as text (`git grep -a`,
+  `git diff --text --no-textconv`), so a local `binary` or textconv attribute cannot blank a line.
+  The marks cost a `rev-parse` and a `check-attr` for each 200 new files asked.
 - **Named symbols.** The backticked words of a claim line that read as identifiers (three characters
   or more, so a path or a dotted name is never one) are the names the claim gives to one home. A
   claim that names nothing is still listed: the reviewer reads it.

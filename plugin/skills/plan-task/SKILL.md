@@ -184,10 +184,10 @@ CLI fallback: `/cc-smart-dev-kit:tasks`.
   tasks under the phase that owns its files, or queue it as a task in the next plan (§ 6).
   Only the person raises the cap: a session's `workflow set` of it is refused, so ask them to
   run it in their own terminal.
-- **Several plans: split them by files.** Make plans file-disjoint where the work allows: two
-  plans that share no file can run side by side (§ 6). Set `blocked_by` between plans only for a
-  real dependency (one needs the other's merged code), never to order plans that merely share
-  a file you could split.
+- **Several plans: split them by files** where the work allows. Plans that share a file still
+  run side by side (§ 6): the store warns and notes the overlap on both, and the one that
+  merges second catches up (`/cc-smart-dev-kit:build` § 6). Set `blocked_by` between plans only
+  for a real dependency (one needs the other's merged code), never for a shared file.
 - **Stack a plan only on your own plan whose branch it is built on** (`stacked_on`). The store
   refuses a stack on another lead's plan. The pair counts only while you lead both, the parent
   records its branch and base with a commit past both the default branch and that base, and the
@@ -206,7 +206,7 @@ CLI fallback: `/cc-smart-dev-kit:tasks`.
   same shape into one dispatch, not one agent per line. A phase that needs an export from a
   file outside the plan's list reports it and stops that step (`cc-smart-dev-kit:builder`, step 5);
   the lead asks the person once to add the file (on yes: `task_update` the plan's `files`, `task_create` a
-  step under that phase; refused by a held plan: wait for it, or the person decides). A guard
+  step under that phase; a held plan that shares the file is warned about, never a bar). A guard
   outside the plan goes to the person.
 - **Name contracts and dependencies.** Contracts (a type, an API shape, a shared constant) go
   first, in a phase of their own; the phases that use them are `blocked_by` it, so they start
@@ -263,7 +263,7 @@ CLI fallback: `/cc-smart-dev-kit:tasks`.
   `solo`, `lead-children` or `coordinator` (`/cc-smart-dev-kit:build` § Lead + children and
   coordinator modes). With one open plan the mode is solo and nothing is asked. Under `ask`
   (the default), ask once with `AskUserQuestion`, and say what each costs. When `herdr plans`
-  shows two or more ready plans that share no file and a Herdr terminal exists, lead +
+  shows two or more ready plans (overlapping or not) and a Herdr terminal exists, lead +
   children is the recommended option (§ 2); otherwise solo is:
   - **Solo:** one session builds the plans one after another: the cheapest and the slowest.
   - **Lead + children:** the lead builds one plan itself and hands each other ready plan to a

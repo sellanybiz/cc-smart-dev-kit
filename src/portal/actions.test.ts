@@ -6,10 +6,23 @@ import { cliPaths } from "../cli/paths";
 import { fakeDefaults, fakeWorkflow } from "../testing/fake-workflow";
 import { makeRepo } from "../testing/hooks";
 import { cleanGitEnv, tempDir } from "../testing/temp";
+import { MADE_WITHOUT_HOOKS, type ProposedJson } from "../workflow/propose";
 import { type ActionContext, portalOmnirouteContext, runAction } from "./actions";
 import { addProjectRoot, forgetProjectsList } from "./api/projects";
 import { testPortalContext } from "./api/test-context";
 import { workflowAdapter } from "./workflow-adapter";
+
+/**
+ * The line the fake `workflow propose --json` prints, typed as the real command's own output: a
+ * change to that shape fails here before the portal can read a line the command no longer prints.
+ */
+const FAKE_PROPOSED: ProposedJson = {
+  branch: "worktree-workflow-allowCommit-20261023",
+  from: false,
+  setting: "allowCommit",
+  to: true,
+  url: "https://github.com/example-org/app/pull/42",
+};
 
 function fakePlugin(): { done: string; folder: string; log: string } {
   const folder = tempDir("plugin");
@@ -25,14 +38,7 @@ if (process.env.FAKE_CLI_SLEEP === "1") await Bun.sleep(400);
 writeFileSync(${JSON.stringify(done)}, "done\\n");
 // workflow propose --json prints one JSON line and nothing else, as the real one does.
 if (process.argv[2] === "workflow" && process.argv[3] === "propose") {
-  console.log(JSON.stringify({
-    branch: "worktree-workflow-allowCommit-20261023",
-    from: false,
-    setting: process.argv[4],
-    to: true,
-    url: "https://github.com/example-org/app/pull/42",
-    worktree: process.cwd() + "/.claude/worktrees/worktree-workflow-allowCommit-20261023",
-  }));
+  console.log(${JSON.stringify(JSON.stringify(FAKE_PROPOSED))});
 } else {
   console.log("command " + process.argv.slice(2).join(" ") + ": done");
 }
@@ -182,7 +188,14 @@ describe("project.workflow.propose runs the CLI's own command in a child", () =>
       { confirm: true, project: idOf(w.repoA), setting: "allowCommit", unset: true },
       w.action,
     );
-    expect(removed.ok).toBe(true);
+    expect(removed).toEqual({
+      lines: [
+        `Opened ${FAKE_PROPOSED.url}`,
+        `Branch ${FAKE_PROPOSED.branch}. ${MADE_WITHOUT_HOOKS}`,
+      ],
+      ok: true,
+      url: FAKE_PROPOSED.url,
+    });
     expect(runsOf(w.log)).toMatchObject([
       { args: ["workflow", "propose", "allowCommit", "--unset", "--json"], cwd: w.repoA },
     ]);

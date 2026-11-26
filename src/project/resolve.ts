@@ -62,6 +62,11 @@ export type CommittedConfig =
   | { found: true; config: CcSmartDevKitConfig; where: string }
   | { found: false; why: string; where: string };
 
+/** What `readCommittedFile` found: `CommittedConfig`, with the file's text exactly as committed. */
+export type CommittedFile =
+  | { found: true; config: CcSmartDevKitConfig; text: string; where: string }
+  | { found: false; why: string; where: string };
+
 export interface CommittedOptions {
   /** The environment git runs with. Default: process.env. */
   env?: Record<string, string | undefined>;
@@ -74,15 +79,21 @@ export interface CommittedOptions {
   timeFor?: TimeFor;
   /** The plugin version to check `requires` against. Default: this build's version. */
   pluginVersion?: string;
+  /**
+   * The commit to read, in place of `origin/<branch>`'s tip: a caller that already holds the
+   * branch's commit reads that one, so a fetch in another process between its reads cannot give
+   * it two. The answers still name `origin/<branch>`.
+   */
+  commit?: string;
 }
 
 /** The answer when git was stopped, or never run, before it said what the ref holds. */
-function gitTimedOut(where: string): CommittedConfig {
+function gitTimedOut(where: string): CommittedFile {
   return { found: false, where, why: GIT_TIMED_OUT };
 }
 
 /** The answer when `origin/<branch>` is not in this repository. */
-function refNotKnown(where: string, ref: string, read: GitResult): CommittedConfig {
+function refNotKnown(where: string, ref: string, read: GitResult): CommittedFile {
   if (read.timedOut === true) return gitTimedOut(where);
   return {
     found: false,
@@ -92,13 +103,13 @@ function refNotKnown(where: string, ref: string, read: GitResult): CommittedConf
 }
 
 /** The answer when the ref's commit has no project file. */
-function noCommittedFile(where: string, ref: string, read: GitResult): CommittedConfig {
+function noCommittedFile(where: string, ref: string, read: GitResult): CommittedFile {
   if (read.timedOut === true) return gitTimedOut(where);
   return { found: false, where, why: `${ref} has no ${CONFIG_PATH} committed` };
 }
 
 /** The answer when git could not read the file it found. */
-function unreadableCommitted(where: string, read: GitResult): CommittedConfig {
+function unreadableCommitted(where: string, read: GitResult): CommittedFile {
   if (read.timedOut === true) return gitTimedOut(where);
   return { found: false, where, why: `git could not read ${where}` };
 }
@@ -108,12 +119,26 @@ function committedOf(
   text: { stdout: string },
   where: string,
   options: CommittedOptions,
-): CommittedConfig {
+): CommittedFile {
   return {
     found: true,
     where,
     config: parseCcSmartDevKitConfig(text.stdout, where, options.pluginVersion),
+    text: text.stdout,
   };
+}
+
+/** `read` as `readCommittedConfig` answers it: without the text. */
+function withoutText(read: CommittedFile): CommittedConfig {
+  if (!read.found) return read;
+  return { found: true, config: read.config, where: read.where };
+}
+
+/** The commit a read starts from (`options.commit`, else the branch's tip), and its names. */
+function readTarget(branch: string, options: CommittedOptions) {
+  const ref = `origin/${branch}`;
+  const at = options.commit ?? `refs/remotes/${ref}`;
+  return { at: `${at}^{commit}`, ref, where: `${ref}:${CONFIG_PATH}` };
 }
 
 /**
@@ -132,15 +157,26 @@ export function readCommittedConfig(
   branch: string,
   options: CommittedOptions = {},
 ): CommittedConfig {
-  const ref = `origin/${branch}`;
-  const where = `${ref}:${CONFIG_PATH}`;
+  return withoutText(readCommittedFile(checkout, branch, options));
+}
+
+/**
+ * `readCommittedConfig`, with the file's text exactly as git holds it: for a writer that edits
+ * that text and commits on that commit (`workflow propose`, which passes `options.commit`).
+ */
+export function readCommittedFile(
+  checkout: Checkout,
+  branch: string,
+  options: CommittedOptions = {},
+): CommittedFile {
+  const { at, ref, where } = readTarget(branch, options);
   const git = gitIn(
     checkout.root,
     gitEnv(options.env ?? process.env),
     options.timeoutMs,
     options.timeFor,
   );
-  const commit = git(["rev-parse", "--verify", "--quiet", `refs/remotes/${ref}^{commit}`]);
+  const commit = git(["rev-parse", "--verify", "--quiet", at]);
   if (!commit.ok) return refNotKnown(where, ref, commit);
   const blob = git(["rev-parse", "--verify", "--quiet", `${commit.stdout.trim()}:${CONFIG_PATH}`]);
   if (!blob.ok) return noCommittedFile(where, ref, blob);
@@ -159,15 +195,14 @@ export async function readCommittedConfigAsync(
   branch: string,
   options: CommittedOptions = {},
 ): Promise<CommittedConfig> {
-  const ref = `origin/${branch}`;
-  const where = `${ref}:${CONFIG_PATH}`;
+  const { at, ref, where } = readTarget(branch, options);
   const git = gitInAsync(
     checkout.root,
     gitEnv(options.env ?? process.env),
     options.timeoutMs,
     options.timeFor,
   );
-  const commit = await git(["rev-parse", "--verify", "--quiet", `refs/remotes/${ref}^{commit}`]);
+  const commit = await git(["rev-parse", "--verify", "--quiet", at]);
   if (!commit.ok) return refNotKnown(where, ref, commit);
   const blob = await git([
     "rev-parse",
@@ -178,7 +213,7 @@ export async function readCommittedConfigAsync(
   if (!blob.ok) return noCommittedFile(where, ref, blob);
   const text = await git(["cat-file", "blob", blob.stdout.trim()]);
   if (!text.ok) return unreadableCommitted(where, text);
-  return committedOf(text, where, options);
+  return withoutText(committedOf(text, where, options));
 }
 
 /**

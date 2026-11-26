@@ -7,7 +7,7 @@ var COMMAND = "cc-smart-dev-kit";
 
 // src/build-info/index.ts
 var info = {
-  version: "6.6.0",
+  version: "6.7.0",
   repo: "sellanybiz/cc-smart-dev-kit",
   dependencies: [
     {
@@ -977,6 +977,9 @@ function gitEnv(base) {
   }
   return env;
 }
+
+// src/workflow/reviews.ts
+var START_KEPT_MS = 24 * 60 * 60 * 1000;
 // src/shell/kit-invocation.ts
 var INERT = new Set([
   "[",
@@ -1473,7 +1476,9 @@ function detectIndent(text) {
 function readJsonObject(file) {
   if (!existsSync5(file))
     return { data: {}, indent: "  ", text: null };
-  const text = readFileSync7(file, "utf8");
+  return parseJsonObject(readFileSync7(file, "utf8"), file);
+}
+function parseJsonObject(text, file) {
   if (text.trim() === "")
     return { data: {}, indent: "  ", text };
   let parsed;
