@@ -17,7 +17,8 @@ Moves seven copies that a slop audit found back onto their one shared home
   keeps the pushed branch, because the pull request may exist.
 - **A deploy skill in a folder whose name starts with `..`** (for example a `.claude` link to
   `..config/claude`) is searched again. `doctor` and `project init` no longer call it a link
-  outside the checkout.
+  outside the checkout. The same test, in one place now, also lets `setup`'s PATH line write a
+  bin folder under a home folder such as `~/..local` from `$HOME`.
 
 The other four behave as before:
 

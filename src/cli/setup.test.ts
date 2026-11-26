@@ -14,7 +14,8 @@ import { retryWatchdogDeclinedFile } from "../setup/retry-watchdog";
 import { readChanged, writeManagedFile } from "../setup/write";
 import { capturePrinted, changeLines, printed, world } from "../testing/fake-machine";
 import { cleanGitEnv, git, tempDir } from "../testing/temp";
-import { statuslineDeclinedFile } from "./setup";
+import { cliPaths } from "./paths";
+import { pathStep, statuslineDeclinedFile } from "./setup";
 
 capturePrinted();
 
@@ -649,5 +650,23 @@ describe("D33: setup lists the repos that still carry a retired worktree piece",
       `  ! ${dir} still has worktrees.prefix in .claude/cc-smart-dev-kit.json, retired in 1.0.0: cd ${dir} && cc-smart-dev-kit project init`,
     );
     expect(printed).toContain("Dry run: nothing was written or run.");
+  });
+});
+
+describe("pathStep", () => {
+  test("a bin folder under a home folder whose name starts with .. is written from $HOME", () => {
+    const paths = { ...cliPaths({ HOME: "/home/user" }), binDir: "/home/user/..local/bin" };
+    expect(pathStep(paths, "linux", { SHELL: "/bin/bash" })).toEqual({
+      text: "Add ~/..local/bin to your PATH, so the cc-smart-dev-kit command works: add this line to ~/.bashrc, then open a new terminal:",
+      command: 'export PATH="$HOME/..local/bin:$PATH"',
+    });
+  });
+
+  test("a bin folder outside the home folder is written in full", () => {
+    const paths = { ...cliPaths({ HOME: "/home/user" }), binDir: "/opt/kit/bin" };
+    expect(pathStep(paths, "linux", { SHELL: "/bin/bash" })).toEqual({
+      text: "Add /opt/kit/bin to your PATH, so the cc-smart-dev-kit command works: add this line to ~/.bashrc, then open a new terminal:",
+      command: 'export PATH="/opt/kit/bin:$PATH"',
+    });
   });
 });
