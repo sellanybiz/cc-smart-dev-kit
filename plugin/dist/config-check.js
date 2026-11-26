@@ -7801,7 +7801,7 @@ function parseWorkflowText(text, file) {
 }
 
 // src/entries/config-check.ts
-var FINGERPRINT = "f9ca83fa6e76773cdec7aa46583dabc540ca8030b04915c0c72d3979ae4003ae";
+var FINGERPRINT = "cf83d28a9adcc460bb6ed14ca8396360e3e093bc64ef4a44a7d36ab2374eb526";
 function answerOf(parse, isConfigError) {
   try {
     return { ok: true, value: parse(), fingerprint: FINGERPRINT };

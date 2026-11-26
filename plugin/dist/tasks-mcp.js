@@ -24261,7 +24261,7 @@ function withoutText(read) {
 function readTarget(branch, options) {
   const ref = `origin/${branch}`;
   const at = options.commit ?? `refs/remotes/${ref}`;
-  return { at: `${at}^{commit}`, ref, where: `${ref}:${CONFIG_PATH}` };
+  return { at, ref, where: `${ref}:${CONFIG_PATH}` };
 }
 function readCommittedConfig(checkout, branch, options = {}) {
   return withoutText(readCommittedFile(checkout, branch, options));
@@ -24269,7 +24269,7 @@ function readCommittedConfig(checkout, branch, options = {}) {
 function readCommittedFile(checkout, branch, options = {}) {
   const { at, ref, where } = readTarget(branch, options);
   const git = gitIn(checkout.root, gitEnv(options.env ?? process.env), options.timeoutMs, options.timeFor);
-  const commit = git(["rev-parse", "--verify", "--quiet", at]);
+  const commit = git(commitArgs(at));
   if (!commit.ok)
     return refNotKnown(where, ref, commit);
   const blob = git(["rev-parse", "--verify", "--quiet", `${commit.stdout.trim()}:${CONFIG_PATH}`]);

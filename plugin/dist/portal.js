@@ -10972,7 +10972,7 @@ function withoutText(read) {
 function readTarget(branch, options) {
   const ref = `origin/${branch}`;
   const at = options.commit ?? `refs/remotes/${ref}`;
-  return { at: `${at}^{commit}`, ref, where: `${ref}:${CONFIG_PATH}` };
+  return { at, ref, where: `${ref}:${CONFIG_PATH}` };
 }
 function readCommittedConfig(checkout, branch, options = {}) {
   return withoutText(readCommittedFile(checkout, branch, options));
@@ -10980,7 +10980,7 @@ function readCommittedConfig(checkout, branch, options = {}) {
 function readCommittedFile(checkout, branch, options = {}) {
   const { at, ref, where } = readTarget(branch, options);
   const git = gitIn(checkout.root, gitEnv(options.env ?? process.env), options.timeoutMs, options.timeFor);
-  const commit = git(["rev-parse", "--verify", "--quiet", at]);
+  const commit = git(commitArgs(at));
   if (!commit.ok)
     return refNotKnown(where, ref, commit);
   const blob = git(["rev-parse", "--verify", "--quiet", `${commit.stdout.trim()}:${CONFIG_PATH}`]);
@@ -10994,7 +10994,7 @@ function readCommittedFile(checkout, branch, options = {}) {
 async function readCommittedConfigAsync(checkout, branch, options = {}) {
   const { at, ref, where } = readTarget(branch, options);
   const git = gitInAsync(checkout.root, gitEnv(options.env ?? process.env), options.timeoutMs, options.timeFor);
-  const commit = await git(["rev-parse", "--verify", "--quiet", at]);
+  const commit = await git(commitArgs(at));
   if (!commit.ok)
     return refNotKnown(where, ref, commit);
   const blob = await git([
@@ -11019,6 +11019,7 @@ async function resolveProjectAsync(cwd, options = {}) {
   return checkout === null ? null : loadProjectConfig(checkout, options.pluginVersion);
 }
 var init_resolve = __esm(() => {
+  init_git();
   init_config();
   init_config_facts();
   init_git_env();
@@ -23214,7 +23215,7 @@ import {
   unlinkSync as unlinkSync4
 } from "fs";
 import { dirname as dirname15, join as join32 } from "path";
-var PARSER_FINGERPRINT = "f9ca83fa6e76773cdec7aa46583dabc540ca8030b04915c0c72d3979ae4003ae";
+var PARSER_FINGERPRINT = "cf83d28a9adcc460bb6ed14ca8396360e3e093bc64ef4a44a7d36ab2374eb526";
 var CHECKED_DIR = "checked";
 var CHECKED_CACHE_LIMIT = 64;
 var CHECKED_FILE_MAX_BYTES = 256 * 1024;
@@ -35833,7 +35834,7 @@ import {
   realpathSync as realpathSync10,
   statSync as statSync25
 } from "fs";
-import { isAbsolute as isAbsolute5, join as join73, relative as relative6, resolve as resolve18, sep as sep4 } from "path";
+import { isAbsolute as isAbsolute5, join as join73, relative as relative6, resolve as resolve18 } from "path";
 
 // src/hooks/after-merge.ts
 init_names();
@@ -39687,6 +39688,7 @@ async function issuesChecks(world) {
 
 // src/cli/project-checks.ts
 init_kinds();
+init_path_compare();
 init_config();
 init_resolve();
 init_managed_json();
@@ -40182,8 +40184,7 @@ function shadcnFolders(root) {
   const addFolder = (folder) => {
     try {
       const target = realpathSync10(folder);
-      const rel = relative6(realpathSync10(root), target);
-      if (rel === ".." || rel.startsWith(`..${sep4}`) || isAbsolute5(rel))
+      if (!isInside(target, realpathSync10(root)))
         return;
       if (statSync25(folder).isDirectory() && !folders.has(target))
         folders.set(target, folder);
@@ -40199,15 +40200,12 @@ function shadcnFolders(root) {
         if (typeof entry !== "string" || isAbsolute5(entry))
           continue;
         const folder = resolve18(root, entry.replace(/\/\*$/, ""));
-        const rel = relative6(root, folder);
-        if (rel === ".." || rel.startsWith(`..${sep4}`) || isAbsolute5(rel))
+        if (!isInside(folder, root))
           continue;
         if (entry.endsWith("/*") && !entry.slice(0, -2).includes("*")) {
           if (!existsSync63(folder))
             continue;
-          const realFolder = realpathSync10(folder);
-          const realRel = relative6(realpathSync10(root), realFolder);
-          if (realRel === ".." || realRel.startsWith(`..${sep4}`) || isAbsolute5(realRel))
+          if (!isInside(realpathSync10(folder), realpathSync10(root)))
             continue;
           for (const child of readdirSync21(folder).sort())
             addFolder(join73(folder, child));
@@ -48233,7 +48231,7 @@ function createLiveSources(deps) {
 
 // src/portal/static.ts
 import { existsSync as existsSync68, readFileSync as readFileSync79, statSync as statSync31 } from "fs";
-import { extname as extname2, join as join81, resolve as resolve19, sep as sep5 } from "path";
+import { extname as extname2, join as join81, resolve as resolve19, sep as sep4 } from "path";
 var TYPES = {
   ".css": "text/css; charset=utf-8",
   ".html": "text/html; charset=utf-8",
@@ -48263,7 +48261,7 @@ function fileInside(folder, pathname) {
   if (decoded.includes("\x00") || decoded.includes("\\"))
     return null;
   const file = resolve19(join81(folder, decoded));
-  if (file !== folder && !file.startsWith(`${folder}${sep5}`))
+  if (file !== folder && !file.startsWith(`${folder}${sep4}`))
     return null;
   try {
     return statSync31(file).isFile() ? file : null;
@@ -48347,7 +48345,7 @@ function exportServer(source) {
         return null;
       const file = fileInside(source.folder, pathname.slice(1));
       const build = resolve19(source.folder, "_next", "static");
-      return file?.startsWith(`${build}${sep5}`) === true ? file : null;
+      return file?.startsWith(`${build}${sep4}`) === true ? file : null;
     }
   };
 }

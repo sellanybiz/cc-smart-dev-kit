@@ -8711,6 +8711,7 @@ var init_config = __esm(() => {
 
 // src/project/resolve.ts
 var init_resolve = __esm(() => {
+  init_git();
   init_config();
   init_config_facts();
   init_git_env();
@@ -10138,7 +10139,7 @@ import {
   unlinkSync as unlinkSync2
 } from "fs";
 import { dirname as dirname3, join as join7 } from "path";
-var PARSER_FINGERPRINT = "f9ca83fa6e76773cdec7aa46583dabc540ca8030b04915c0c72d3979ae4003ae";
+var PARSER_FINGERPRINT = "cf83d28a9adcc460bb6ed14ca8396360e3e093bc64ef4a44a7d36ab2374eb526";
 var CHECKED_DIR = "checked";
 var CHECKED_CACHE_LIMIT = 64;
 var CHECKED_FILE_MAX_BYTES = 256 * 1024;

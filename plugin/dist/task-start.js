@@ -520,7 +520,7 @@ var PLUGIN_INSTALL_COMMAND = `claude plugin install ${PLUGIN_ID}`;
 var PLUGIN_UPDATE_COMMAND = `claude plugin update ${PLUGIN_ID}`;
 
 // src/hooks/checked-config.ts
-var PARSER_FINGERPRINT = "f9ca83fa6e76773cdec7aa46583dabc540ca8030b04915c0c72d3979ae4003ae";
+var PARSER_FINGERPRINT = "cf83d28a9adcc460bb6ed14ca8396360e3e093bc64ef4a44a7d36ab2374eb526";
 var CHECKED_DIR = "checked";
 var CHECKED_CACHE_LIMIT = 64;
 var CHECKED_FILE_MAX_BYTES = 256 * 1024;
@@ -8576,20 +8576,6 @@ function checkCcSmartDevKitConfig(raw, where, pluginVersion = VERSION) {
   return parsed.data;
 }
 
-// src/project/resolve.ts
-function loadProjectConfig(checkout, pluginVersion) {
-  const file = projectFileFor(checkout);
-  const config = file === null ? null : loadCcSmartDevKitConfig(file, pluginVersion);
-  return { ...checkout, config, configFile: config === null ? null : file };
-}
-
-// src/workflow/reviews.ts
-import { createHash as createHash2 } from "crypto";
-var START_KEPT_MS = 24 * 60 * 60 * 1000;
-function repoKey(repo) {
-  return createHash2("sha256").update(repo).digest("hex").slice(0, 16);
-}
-
 // src/path-compare.ts
 import { dirname as dirname4, resolve as resolve2 } from "path";
 var IGNORE_CASE = process.platform === "win32";
@@ -8601,6 +8587,19 @@ function isInside(path, folder, ignoreCase = IGNORE_CASE) {
 function pathForm(path, ignoreCase = IGNORE_CASE) {
   const forward = resolve2(path.replace(/\\/g, "/")).replace(/\\/g, "/").replace(/\/+$/, "");
   return ignoreCase ? forward.toLowerCase() : forward;
+}
+
+// src/workflow/reviews.ts
+import { createHash as createHash2 } from "crypto";
+var START_KEPT_MS = 24 * 60 * 60 * 1000;
+function repoKey(repo) {
+  return createHash2("sha256").update(repo).digest("hex").slice(0, 16);
+}
+// src/project/resolve.ts
+function loadProjectConfig(checkout, pluginVersion) {
+  const file = projectFileFor(checkout);
+  const config = file === null ? null : loadCcSmartDevKitConfig(file, pluginVersion);
+  return { ...checkout, config, configFile: config === null ? null : file };
 }
 
 // src/tasks/words.ts
