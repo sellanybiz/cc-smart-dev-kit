@@ -5,7 +5,7 @@ import { dirname, join } from "node:path";
 import { cliPaths } from "../cli/paths";
 import { hookEnv, makeRepo } from "../testing/hooks";
 import { personalWorkflowFile } from "./resolve";
-import { writePersonalSetting, writeProjectSetting } from "./write";
+import { editProjectSetting, writePersonalSetting, writeProjectSetting } from "./write";
 
 /** A project file exactly as this repo's Biome prints it. */
 const BIOME_PROJECT = `{
@@ -136,6 +136,39 @@ describe("workflow set / unset --project", () => {
       }
     }
     expect(readFileSync(file, "utf8")).toBe(BIOME_PROJECT);
+  });
+
+  test("the pure step gives the text and the line the writer writes and prints, and touches no file", () => {
+    const { repo, file, env } = projectWith(BIOME_PROJECT);
+    const edit = editProjectSetting(BIOME_PROJECT, file, "switches.jobRoute", false);
+    expect(readFileSync(file, "utf8")).toBe(BIOME_PROJECT);
+    expect(edit).toEqual({
+      changed: true,
+      line: `~ ${file}: switches.jobRoute = false`,
+      raised: null,
+      text: BIOME_PROJECT.replace(
+        '      "lines": 200\n    }\n  }\n}\n',
+        '      "lines": 200\n    }\n  },\n  "jobs": {\n    "route": false\n  }\n}\n',
+      ),
+    });
+    expect(writeProjectSetting(repo, "switches.jobRoute", false, env)).toBe(edit.line);
+    expect(readFileSync(file, "utf8")).toBe(edit.text);
+  });
+
+  test("the pure step names a raised requires, and the same edit again changes nothing", () => {
+    const text = `{\n  "requires": ">=0.1",\n  "worktrees": { "base": "main" }\n}\n`;
+    const where = "origin/main:.claude/cc-smart-dev-kit.json";
+    const raised = editProjectSetting(text, where, "plans.mergeFiles", ["CHANGELOG.md"]);
+    expect(raised.raised).toEqual({ from: ">=0.1", to: ">=5.2" });
+    expect(raised.line).toBe(
+      `~ ${where}: plans.mergeFiles = CHANGELOG.md; requires ">=0.1" -> ">=5.2" (the file's fields need it)`,
+    );
+    expect(editProjectSetting(raised.text, where, "plans.mergeFiles", ["CHANGELOG.md"])).toEqual({
+      changed: false,
+      line: `= ${where}: plans.mergeFiles = CHANGELOG.md (already set)`,
+      raised: null,
+      text: raised.text,
+    });
   });
 
   test("a file that is not valid JSON is refused, and left as it was", () => {

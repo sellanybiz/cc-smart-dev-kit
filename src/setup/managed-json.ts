@@ -183,7 +183,17 @@ export function readJsonObject(file: string): {
   text: string | null;
 } {
   if (!existsSync(file)) return { data: {}, indent: "  ", text: null };
-  const text = readFileSync(file, "utf8");
+  return parseJsonObject(readFileSync(file, "utf8"), file);
+}
+
+/**
+ * The object a JSON file's `text` holds, its indent, and the text itself: `{}` for a blank text.
+ * `file` names the file in the error, for a text read from disk or from a commit.
+ */
+export function parseJsonObject(
+  text: string,
+  file: string,
+): { data: JsonObject; indent: string; text: string } {
   if (text.trim() === "") return { data: {}, indent: "  ", text };
   let parsed: unknown;
   try {

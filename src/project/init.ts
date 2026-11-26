@@ -38,8 +38,7 @@ import { join } from "node:path";
 import { z } from "zod";
 import { describeHandler, retiredEngineHookOf } from "../hooks/settings-hooks";
 import { jsonTextFor } from "../setup/json-edit";
-import { detectIndent, isObject } from "../setup/managed-json";
-import { parseUserJson } from "../setup/user-json";
+import { detectIndent, isObject, parseJsonObject } from "../setup/managed-json";
 import { atomicWrite, backupFile, fileMode, realTarget } from "../setup/write";
 import { deployTasksDir, envFolder } from "../tasks/deploy/files";
 import { DEPLOY_ENVS, type DeployEnv } from "../tasks/deploy/format";
@@ -205,18 +204,9 @@ function orderKeys(
 
 /** One file as an object: `{}` when there is none, a clear error when it cannot be read. */
 function parseObject(text: string | null, file: string): Record<string, unknown> {
-  if (text === null || text.trim() === "") return {};
-  let raw: unknown;
-  try {
-    // The one reader of a person-edited JSON file: an editor's byte order mark is skipped, so
-    // a project file saved that way is read here as every guard reads it (F5-2).
-    raw = parseUserJson(text);
-  } catch (error) {
-    const reason = error instanceof Error ? error.message : String(error);
-    throw new Error(`${file} is not valid JSON (${reason}). Fix it by hand, then run again.`);
-  }
-  if (!isObject(raw)) throw new Error(`${file} must hold a JSON object.`);
-  return raw;
+  // The one reader of a person-edited JSON file: an editor's byte order mark is skipped, so a
+  // project file saved that way is read here as every guard reads it (F5-2).
+  return text === null ? {} : parseJsonObject(text, file).data;
 }
 
 /** `">=0.4"` for this plugin's version: the fields this command writes arrived with it. */
