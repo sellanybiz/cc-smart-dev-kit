@@ -81,7 +81,8 @@ import {
   reviewsFile,
   takeReviewStart,
 } from "../workflow/reviews";
-import { GUARD_GIT_TIMEOUT_MS, runGit } from "./git";
+import { SUBAGENT_NAME_PREFIX } from "../worktrees/paths";
+import { commitArgs, commitIn, GUARD_GIT_TIMEOUT_MS, runGit } from "./git";
 import { type HookResult, SILENT, stringField } from "./io";
 import type { Env, HookContext } from "./run";
 import { subagentWorktreeByShape } from "./subagent-worktree";
@@ -122,13 +123,7 @@ function headBranch(folder: string, env: Env): string | null {
 
 /** The commit `folder` is on, or null when git cannot name one (no commit yet). */
 function headCommit(folder: string, env: Env): string | null {
-  const run = runGit(
-    folder,
-    ["rev-parse", "--verify", "--quiet", "HEAD^{commit}"],
-    env,
-    GUARD_GIT_TIMEOUT_MS,
-  );
-  return run.ok && /^[0-9a-f]{40,64}$/.test(run.out) ? run.out : null;
+  return commitIn(runGit(folder, commitArgs("HEAD"), env, GUARD_GIT_TIMEOUT_MS));
 }
 
 /** One line on stderr: what the person reads when no review was recorded for a reason. */
@@ -145,8 +140,9 @@ function said(why: string): HookResult {
 export function inOwnWorktree(cwd: string, agentId: string): boolean {
   const folder = subagentWorktreeByShape(cwd);
   if (folder === null) return false;
-  const name = folder.split(/[\\/]/).at(-1) ?? "";
-  return agentIdKey(name) === agentIdKey(agentId);
+  // The folder's name is the prefix the shape matched, then the hex: read it the same way.
+  const hex = (folder.split(/[\\/]/).at(-1) ?? "").slice(SUBAGENT_NAME_PREFIX.length);
+  return hex === agentIdKey(agentId);
 }
 
 export async function reviewRecord(context: HookContext): Promise<HookResult> {
@@ -195,16 +191,17 @@ export async function reviewRecord(context: HookContext): Promise<HookResult> {
       return SILENT;
     }
     const start = await takeReviewStart(reviewStartsFile(paths.stateDir, repository), agentId);
-    if (isolated) {
-      return notRecorded(
-        "this review agent worked in its own worktree, a branch cut from the base rather than the commit under review",
-        ": run the reviewer without isolation",
-      );
-    }
+    // A run that was no review is told so first: "run without isolation" is advice for a review.
     const transcript = stringField(input.agent_transcript_path);
     if (transcript === null || !isReviewRun(transcript)) {
       return notRecorded(
         `this run was not a review from start to end (its brief and every later prompt need the line "${REVIEW_MODE_MARKER}"), or its transcript cannot be read`,
+      );
+    }
+    if (isolated) {
+      return notRecorded(
+        "this review agent worked in its own worktree, a branch cut from the base rather than the commit under review",
+        ": run the reviewer without isolation",
       );
     }
     if (headCommit(cwd, env) === null) return notRecorded("the folder has no commit yet");

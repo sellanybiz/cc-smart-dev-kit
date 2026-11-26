@@ -6,7 +6,15 @@ import { describe, expect, test } from "bun:test";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { cleanGitEnv, git, tempDir } from "../testing/temp";
-import { parseWorktreeList, reflogEntryTime, runGit, runGitRaw, worktreeAdminDir } from "./git";
+import {
+  commitArgs,
+  commitIn,
+  parseWorktreeList,
+  reflogEntryTime,
+  runGit,
+  runGitRaw,
+  worktreeAdminDir,
+} from "./git";
 
 describe("runGit with input", () => {
   test("git reads the text on stdin byte for byte: CRLF, no last newline, non-ASCII", () => {
@@ -16,6 +24,23 @@ describe("runGit with input", () => {
     const hashed = runGit(repo, ["hash-object", "-w", "--stdin"], cleanGitEnv(), 15_000, {}, text);
     expect(hashed).toMatchObject({ ok: true, code: 0 });
     expect(runGitRaw(repo, ["cat-file", "blob", hashed.out], cleanGitEnv()).out).toBe(text);
+  });
+});
+
+describe("commitArgs and commitIn", () => {
+  test("a rev that names a commit gives its full id, a tag of it too; anything else gives null", () => {
+    const repo = tempDir("git-commit");
+    git(repo, "init", "-q", "-b", "main");
+    writeFileSync(join(repo, "a.txt"), "a\n");
+    git(repo, "add", "a.txt");
+    git(repo, "commit", "-q", "-m", "first");
+    git(repo, "tag", "-a", "-m", "tag", "v1");
+    const head = git(repo, "rev-parse", "HEAD").trim();
+    const ask = (rev: string) => commitIn(runGit(repo, commitArgs(rev), cleanGitEnv()));
+    expect(ask("HEAD")).toBe(head);
+    expect(ask("v1")).toBe(head);
+    expect(ask("main:a.txt")).toBeNull();
+    expect(ask("no-such-ref")).toBeNull();
   });
 });
 

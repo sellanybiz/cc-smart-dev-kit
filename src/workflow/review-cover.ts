@@ -43,9 +43,16 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { COMMAND } from "../build-info/names";
-import { GIT_TIMED_OUT, type GitRun, GUARD_GIT_TIMEOUT_MS, runGitAsync } from "../hooks/git";
+import {
+  commitArgs,
+  commitIn,
+  GIT_TIMED_OUT,
+  type GitRun,
+  GUARD_GIT_TIMEOUT_MS,
+  runGitAsync,
+} from "../hooks/git";
 import type { Env } from "../hooks/run";
-import { generatedChecks, generatedIn, openBaseOnlyGit } from "../project/generated";
+import { type BaseOnlyGit, generatedIn, openBaseOnlyGit } from "../project/generated";
 import type { Checkout } from "../project/resolve";
 import { COMMIT_SHA, type TrustedReview } from "./reviews";
 
@@ -320,11 +327,12 @@ export async function readCover(
     };
   }
   let objects: string | null = null;
+  const attributes: { opened: BaseOnlyGit | null } = { opened: null };
   try {
     objects = mkdtempSync(join(tmpdir(), `${COMMAND}-cover-`));
     // Awaited inside this try: a rejected measurement must become the answer below, never
-    // escape past the `finally` that removes the temporary object folder.
-    return await measure(checkout, target, branched, limits, git, objects);
+    // escape past the `finally` that removes the temporary folders.
+    return await measure(checkout, target, branched, limits, git, objects, attributes);
   } catch (error) {
     if (error instanceof Uncovered)
       return { covered: false, review: error.review, why: error.message };
@@ -336,12 +344,14 @@ export async function readCover(
     };
   } finally {
     if (objects !== null) rmSync(objects, { recursive: true, force: true });
+    attributes.opened?.remove();
   }
 }
 
 /**
  * The measurement itself: every git call `readCover` makes, for the reviews in `records` (each on
- * some branch, the newest first) that are candidates. Throws `Uncovered` with a reason.
+ * some branch, the newest first) that are candidates. The throwaway folder that reads the base's
+ * attributes goes in `attributes`, for the caller to remove. Throws `Uncovered` with a reason.
  */
 async function measure(
   checkout: Checkout,
@@ -350,6 +360,7 @@ async function measure(
   limits: FixLimits,
   git: CoverGit,
   objects: string,
+  attributes: { opened: BaseOnlyGit | null },
 ): Promise<Cover> {
   const baseRef = `refs/remotes/origin/${base}`;
   // Every call reads the repository's objects and writes only into the temporary folder.
@@ -357,17 +368,19 @@ async function measure(
     GIT_OBJECT_DIRECTORY: objects,
     GIT_ALTERNATE_OBJECT_DIRECTORIES: alternateEntry(join(checkout.commonDir, "objects")),
   };
-  const run = async (args: string[], vars: Record<string, string> = own): Promise<GitRun> => {
+  const run = async (
+    args: string[],
+    vars: Record<string, string> = own,
+    cwd = checkout.root,
+  ): Promise<GitRun> => {
     const left = (git.timeFor ?? ((limit: number) => limit))(GUARD_GIT_TIMEOUT_MS);
     if (left <= 0) throw new OutOfTime();
-    const result = await (git.run ?? runGitAsync)(checkout.root, args, git.env, left, vars);
+    const result = await (git.run ?? runGitAsync)(cwd, args, git.env, left, vars);
     if (result.code === null && result.err === GIT_TIMED_OUT) throw new OutOfTime();
     return result;
   };
-  const commit = async (rev: string): Promise<string | null> => {
-    const found = await run(["rev-parse", "--verify", "--quiet", `${rev}^{commit}`]);
-    return found.ok && COMMIT_SHA.test(found.out) ? found.out : null;
-  };
+  const commit = async (rev: string): Promise<string | null> =>
+    commitIn(await run(commitArgs(rev)));
 
   const asked = await run(["--version"]);
   if (!asked.ok) throw new Uncovered(`git cannot be run here (${asked.err})`);
@@ -382,6 +395,13 @@ async function measure(
       `origin/${base} is not in this checkout: fetch it (git fetch origin ${base})`,
     );
   }
+  // What counts as generated, and as binary, is the base's alone (`project/generated.ts`).
+  const isolated = openBaseOnlyGit(checkout.commonDir, baseSha);
+  attributes.opened = isolated;
+  const marks = await run(isolated.readBase, isolated.env, isolated.cwd);
+  if (!marks.ok) {
+    throw new Uncovered(`the attributes of origin/${base} cannot be read (${marks.err})`);
+  }
   const mergeBase = async (a: string, b: string): Promise<string> => {
     const found = await run(["merge-base", a, b]);
     if (!found.ok) {
@@ -391,17 +411,13 @@ async function measure(
   };
   const numstat = async (from: string, to: string, review: string): Promise<Changed[]> => {
     // No textconv and no external diff: what is counted is the bytes in the commits, never what
-    // a checkout's own attributes or config turn them into.
-    const diff = await run([
-      "diff",
-      "--no-textconv",
-      "--no-ext-diff",
-      "--numstat",
-      "-z",
-      "-M",
-      from,
-      to,
-    ]);
+    // a checkout's own attributes or config turn them into. Run in the throwaway folder, whose
+    // work tree holds the base's attribute files: only the base says which file is binary.
+    const diff = await run(
+      isolated.args(["diff", "--no-textconv", "--no-ext-diff", "--numstat", "-z", "-M", from, to]),
+      { ...own, ...isolated.env },
+      isolated.cwd,
+    );
     if (!diff.ok) {
       throw new Uncovered(
         `the change after the review of ${short(review)} cannot be read (${diff.err})`,
@@ -411,23 +427,17 @@ async function measure(
     return parseNumstat(diff.out);
   };
   const generatedOf = async (paths: readonly string[]): Promise<Set<string>> => {
-    // The base's own marks, never a local attribute file (`project/generated.ts`).
-    const isolated = openBaseOnlyGit(checkout.commonDir, baseSha);
-    try {
-      const generated = new Set<string>();
-      for (const args of generatedChecks(baseSha, paths)) {
-        const attrs = await run(args, isolated.env);
-        if (!attrs.ok) {
-          throw new Uncovered(
-            `which files origin/${base} marks as generated cannot be read (${attrs.err})`,
-          );
-        }
-        for (const path of generatedIn(attrs.out)) generated.add(path);
+    const generated = new Set<string>();
+    for (const args of isolated.checks(paths)) {
+      const attrs = await run(args, isolated.env, isolated.cwd);
+      if (!attrs.ok) {
+        throw new Uncovered(
+          `which files origin/${base} marks as generated cannot be read (${attrs.err})`,
+        );
       }
-      return generated;
-    } finally {
-      isolated.remove();
+      for (const path of generatedIn(attrs.out)) generated.add(path);
     }
+    return generated;
   };
   const tally = (changed: readonly Changed[], generated: ReadonlySet<string>): ChangeCount => {
     const count: ChangeCount = { lines: 0, files: 0, generated: [], binary: [] };
@@ -447,6 +457,9 @@ async function measure(
     branch !== null && record.branches.includes(branch);
   let holders = new Set<string>();
   if (!records.every(onBranch)) {
+    // Similar to `src/worktrees/scan.ts:holdingBranch`; not shared yet: that one is sync, cuts
+    // full ref names by hand and keeps only branches a worktree stands on; this one is async,
+    // under the gate's time limit, and keeps every local branch.
     const holding = await run([
       "for-each-ref",
       `--contains=${head}`,

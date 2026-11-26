@@ -37,7 +37,7 @@
  * would freeze every page and the live stream (`.claude/rules/portal.md`).
  */
 import type { CliPaths } from "../cli/paths";
-import { GUARD_GIT_TIMEOUT_MS, runGitAsync } from "../hooks/git";
+import { commitArgs, commitIn, GUARD_GIT_TIMEOUT_MS, runGitAsync } from "../hooks/git";
 import type { Env } from "../hooks/run";
 import type { Checkout } from "../project/resolve";
 import { autoMergeOff, autoMergeRefusal, baseRefusal } from "./auto-merge";
@@ -1158,13 +1158,7 @@ export async function checkPullRequest(
 async function commitOf(world: MergeWorld, rev: string): Promise<string | null> {
   const left = world.timeFor(GUARD_GIT_TIMEOUT_MS);
   if (left <= 0) return null;
-  const run = await runGitAsync(
-    world.checkout.root,
-    ["rev-parse", "--verify", "--quiet", `${rev}^{commit}`],
-    world.env,
-    left,
-  );
-  return run.ok && COMMIT_SHA.test(run.out) ? run.out : null;
+  return commitIn(await runGitAsync(world.checkout.root, commitArgs(rev), world.env, left));
 }
 
 /**

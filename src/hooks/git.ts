@@ -6,6 +6,7 @@ import { readFileSync, realpathSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { isInside } from "../path-compare";
 import { gitEnv } from "../project/git-env";
+import { COMMIT_SHA } from "../workflow/reviews";
 import type { Env } from "./run";
 
 // The path tests live in their one home, `src/path-compare.ts`; the hooks have always imported
@@ -129,6 +130,19 @@ export async function runGitAsync(
     const err = error instanceof Error ? error.message : String(error);
     return { ok: false, out: "", err, code: null };
   }
+}
+
+/**
+ * The arguments of the call that asks which commit `rev` names; `commitIn` reads its answer.
+ * Each caller runs it its own way (sync or async, with its own time limit).
+ */
+export function commitArgs(rev: string): string[] {
+  return ["rev-parse", "--verify", "--quiet", `${rev}^{commit}`];
+}
+
+/** The full commit id a `commitArgs` call answered, or null when git named none. */
+export function commitIn(run: GitRun): string | null {
+  return run.ok && COMMIT_SHA.test(run.out) ? run.out : null;
 }
 
 /**

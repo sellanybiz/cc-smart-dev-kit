@@ -41,7 +41,7 @@ import { type ParsedOptions, parseOptions } from "../cli/args";
 import { type CliPaths, tildify } from "../cli/paths";
 import { plural } from "../cli/ui/out";
 import { UNKNOWN_BASE } from "../herdr/plans";
-import { runGit } from "../hooks/git";
+import { commitArgs, commitIn, runGit } from "../hooks/git";
 import { type CcSmartDevKitConfig, WORKFLOW_ALLOW_KEYS_SINCE } from "../project/config";
 import { type Checkout, CONFIG_PATH, loadProjectConfig, locateCheckout } from "../project/resolve";
 import { taskContext } from "../tasks/context";
@@ -72,14 +72,7 @@ import {
   settleMergeFiles,
   sourceLabel,
 } from "./resolve";
-import {
-  BY_HAND,
-  COMMIT_SHA,
-  hasReview,
-  type RecordedReview,
-  recordReview,
-  reviewsFile,
-} from "./reviews";
+import { BY_HAND, hasReview, type RecordedReview, recordReview, reviewsFile } from "./reviews";
 import type { WorkflowKey } from "./schema";
 import {
   currentKeyName,
@@ -248,13 +241,7 @@ function checkoutOf(cwd: string, env: Env): { checkout: Checkout | null; why: st
 
 /** The commit `rev` names in `folder`: the full sha, or null when git cannot name one. */
 function commitOf(folder: string, rev: string, env: Env): string | null {
-  const run = runGit(
-    folder,
-    ["rev-parse", "--verify", "--quiet", `${rev}^{commit}`],
-    env,
-    WORKFLOW_GIT_TIMEOUT_MS,
-  );
-  return run.ok && COMMIT_SHA.test(run.out) ? run.out : null;
+  return commitIn(runGit(folder, commitArgs(rev), env, WORKFLOW_GIT_TIMEOUT_MS));
 }
 
 /** The repository a checkout belongs to: the main checkout of every worktree of it. */

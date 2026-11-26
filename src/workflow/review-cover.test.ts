@@ -696,6 +696,117 @@ describe("D17: what is listed, not counted, and what is never covered", () => {
     },
     SLOW,
   );
+
+  // What counts as binary comes from the base too: a local file must neither turn a text change
+  // into an uncounted one nor let a binary one pass as a few lines.
+  const BIG_FIX_WHY = (R: string) =>
+    `500 lines in 1 file changed after the review of ${short(R)}, over the limit of 200 lines and 10 files (fixesAfterReview: 200 lines, 10 files, or 20% of the reviewed 100 lines in 2 files)`;
+  for (const [name, mark] of [
+    [
+      "info/attributes",
+      (w: World) => {
+        writeFileSync(join(w.repo, ".git", "info", "attributes"), "* binary\n");
+        return w.env;
+      },
+    ],
+    [
+      "a core.attributesFile",
+      (w: World) => {
+        const file = join(tempDir("attributes"), "attributes");
+        writeFileSync(file, "* binary\n");
+        git(w.repo, "config", "core.attributesFile", file);
+        return w.env;
+      },
+    ],
+  ] as const) {
+    test(
+      `security: \`* binary\` in ${name} leaves a text fix's lines counted`,
+      async () => {
+        const w = world();
+        const R = reviewed(w.repo);
+        commit(w.repo, { "big.js": numbered(500, "big") });
+        expect(await cover(w, [record(R)], {}, LIMITS, mark(w))).toEqual({
+          covered: false,
+          delta: count(500, 1),
+          review: R,
+          reviewed: REVIEWED,
+          why: BIG_FIX_WHY(R),
+        });
+      },
+      SLOW,
+    );
+  }
+
+  /** A binary change after the review of `R`, not covered: what each case below expects. */
+  const binaryRefused = (R: string): Cover => ({
+    covered: false,
+    delta: { binary: ["logo.bin"], files: 1, generated: [], lines: 0 },
+    review: R,
+    reviewed: REVIEWED,
+    why: `logo.bin is a binary file changed after the review of ${short(R)}: its change cannot be counted`,
+  });
+
+  test(
+    "security: info/attributes that calls a binary file text does not let it pass as a few lines",
+    async () => {
+      const w = world();
+      const R = reviewed(w.repo);
+      commit(w.repo, { "logo.bin": new Uint8Array([0, 1, 2, 0, 255, 0]) });
+      writeFileSync(join(w.repo, ".git", "info", "attributes"), "*.bin diff\n");
+      expect(await cover(w, [record(R)])).toEqual(binaryRefused(R));
+    },
+    SLOW,
+  );
+
+  test(
+    "security: a .gitattributes in the checkout, never committed, does not let a binary file pass as text",
+    async () => {
+      const w = world();
+      const R = reviewed(w.repo);
+      commit(w.repo, { "logo.bin": new Uint8Array([0, 1, 2, 0, 255, 0]) });
+      writeFileSync(join(w.repo, ".gitattributes"), "*.bin diff\n");
+      expect(await cover(w, [record(R)])).toEqual(binaryRefused(R));
+    },
+    SLOW,
+  );
+
+  test(
+    "security: the person's own config cannot call a base-named diff driver text",
+    async () => {
+      const w = world();
+      toBase(w.repo, { ".gitattributes": "*.bin diff=raw\n" }, "main");
+      const R = reviewed(w.repo);
+      commit(w.repo, { "logo.bin": new Uint8Array([0, 1, 2, 0, 255, 0]) });
+      const global = join(tempDir("gitconfig"), "gitconfig");
+      writeFileSync(global, '[diff "raw"]\n\tbinary = false\n');
+      expect(
+        await cover(w, [record(R)], {}, LIMITS, { ...w.env, GIT_CONFIG_GLOBAL: global }),
+      ).toEqual(binaryRefused(R));
+    },
+    SLOW,
+  );
+
+  test(
+    "D17: the base's own binary mark counts: a text file it marks binary is never covered",
+    async () => {
+      const w = world();
+      toBase(
+        w.repo,
+        { ".gitattributes": "*.dat binary\n", "data/.gitattributes": "*.tab binary\n" },
+        "main",
+      );
+      const R = reviewed(w.repo);
+      commit(w.repo, { "table.dat": "one\ntwo\n", "data/rows.tab": "one\n" });
+      expect(await cover(w, [record(R)])).toEqual({
+        covered: false,
+        delta: { binary: ["data/rows.tab", "table.dat"], files: 2, generated: [], lines: 0 },
+        review: R,
+        reviewed: REVIEWED,
+        why: `data/rows.tab (and 1 other) is a binary file changed after the review of ${short(R)}: its change cannot be counted`,
+      });
+    },
+    SLOW,
+  );
 });
 
 describe("D17: what cannot be read is not covered, with the reason", () => {
