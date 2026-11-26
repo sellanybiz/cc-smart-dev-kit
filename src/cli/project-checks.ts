@@ -60,6 +60,7 @@ import {
 import { isAbsolute, join, relative, resolve } from "node:path";
 import { COMMAND, PLUGIN_UPDATE_COMMAND } from "../build-info";
 import { PLUGIN } from "../build-info/names";
+import { messageOf } from "../error-message";
 import { runGitAsync } from "../hooks/git";
 import {
   allWiredHandlers,
@@ -122,10 +123,6 @@ type Env = Record<string, string | undefined>;
 /** What fixes a git that cannot read this folder's checkout. */
 const GIT_FIX = `check that git works in this folder (git status), then run: ${COMMAND} doctor`;
 
-function message(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}
-
 /** A settings file as the person knows it: relative to the project folder, else with `~`. */
 function shown(file: string, projectDir: string, home: string): string {
   return file.startsWith(`${projectDir}/`)
@@ -151,7 +148,7 @@ export function retiredReviewAgentCheck(
   } catch (error) {
     return {
       ok: false,
-      text: `${label} cannot be read (${message(error)})`,
+      text: `${label} cannot be read (${messageOf(error)})`,
       fix: "correct the JSON in this file",
     };
   }
@@ -414,14 +411,15 @@ function baseRefOf(sources: string[]): string | null {
   for (const file of sources) {
     if (!existsSync(file)) continue;
     try {
-      const parsed: unknown = JSON.parse(readFileSync(file, "utf8"));
+      const parsed = readUserJson(file);
       if (typeof parsed !== "object" || parsed === null) continue;
       const worktree = (parsed as { worktree?: unknown }).worktree;
       if (typeof worktree !== "object" || worktree === null) continue;
       const value = (worktree as { baseRef?: unknown }).baseRef;
       if (typeof value === "string") baseRef = value;
     } catch {
-      // A settings file that is not JSON: Claude Code cannot read it either.
+      // Not JSON even past a byte order mark (which Claude Code skips, as readUserJson does):
+      // Claude Code cannot read it either.
     }
   }
   return baseRef;
@@ -492,7 +490,7 @@ function ownCopyLines(
     return [
       {
         ok: false,
-        text: `cannot read the plugin's hooks (${pluginHooksFile}): ${message(error)}`,
+        text: `cannot read the plugin's hooks (${pluginHooksFile}): ${messageOf(error)}`,
         fix: PLUGIN_UPDATE_COMMAND,
       },
     ];
@@ -687,7 +685,11 @@ function deployBlockLines(root: string, usesDeployTasks: boolean): ProjectLine[]
     return lines;
   } catch (error) {
     return [
-      { ok: true, info: true, text: `project: deploy-skill block not checked, ${message(error)}` },
+      {
+        ok: true,
+        info: true,
+        text: `project: deploy-skill block not checked, ${messageOf(error)}`,
+      },
     ];
   }
 }
@@ -1026,7 +1028,7 @@ export function planCapChecks(
   try {
     cap = resolvePlans(paths, config).maxPhases;
   } catch (error) {
-    return [{ ok: true, info: true, text: `project plans: not checked, ${message(error)}` }];
+    return [{ ok: true, info: true, text: `project plans: not checked, ${messageOf(error)}` }];
   }
   const read = readWorkStore(paths, (db) => allTasks(db, context.project));
   if (read.state !== "ready") return [];
@@ -1152,7 +1154,11 @@ export async function projectTaskChecks(cwd: string, env: Env): Promise<Check[]>
     return lines;
   } catch (error) {
     return [
-      { ok: false, text: `deploy tasks: ${message(error)}`, fix: `run \`${COMMAND} task check\`` },
+      {
+        ok: false,
+        text: `deploy tasks: ${messageOf(error)}`,
+        fix: `run \`${COMMAND} task check\``,
+      },
     ];
   }
 }

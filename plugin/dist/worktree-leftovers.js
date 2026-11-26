@@ -96,6 +96,11 @@ function claudeMemDataDir(env, home) {
   return dir.startsWith("~/") ? join2(home, dir.slice(2)) : dir;
 }
 
+// src/error-message.ts
+function messageOf(error) {
+  return error instanceof Error ? error.message : String(error);
+}
+
 // src/gateway/plain-text.ts
 var CONTROL = /[\p{Cc}\p{Cf}]/gu;
 var CONTROL_BUT_LINES = /[^\P{Cc}\n\t]|\p{Cf}/gu;
@@ -146,39 +151,24 @@ function maskedLine(text, known, max, options = {}) {
 }
 
 // src/project/locate.ts
-import { existsSync as existsSync2, realpathSync, statSync } from "fs";
-import { join as join3 } from "path";
+import { existsSync as existsSync3, realpathSync as realpathSync3, statSync as statSync2 } from "fs";
+import { join as join5 } from "path";
 
-// src/project/config-facts.ts
-import { existsSync } from "fs";
+// src/hooks/git.ts
+import { readFileSync as readFileSync2, realpathSync as realpathSync2 } from "fs";
+import { basename as basename2, dirname as dirname3, join as join4, resolve as resolve3 } from "path";
 
-// src/setup/user-json.ts
-import { readFileSync } from "fs";
-var BOM = "\uFEFF";
-function withoutBom(text) {
-  return text.startsWith(BOM) ? text.slice(BOM.length) : text;
+// src/path-compare.ts
+import { dirname, resolve } from "path";
+var IGNORE_CASE = process.platform === "win32";
+function isInside(path, folder, ignoreCase = IGNORE_CASE) {
+  const child = pathForm(path, ignoreCase);
+  const parent = pathForm(folder, ignoreCase);
+  return child === parent || child.startsWith(`${parent}/`);
 }
-function parseUserJson(text) {
-  return JSON.parse(withoutBom(text));
-}
-function readUserJson(file) {
-  return parseUserJson(readFileSync(file, "utf8"));
-}
-
-// src/project/config-facts.ts
-var CONFIG_PATH = ".claude/cc-smart-dev-kit.json";
-function readOwnHooks(file) {
-  if (!existsSync(file))
-    return null;
-  try {
-    const raw = readUserJson(file);
-    if (typeof raw !== "object" || raw === null || Array.isArray(raw))
-      return [];
-    const listed = raw.ownHooks;
-    return Array.isArray(listed) ? listed.filter((name) => typeof name === "string") : [];
-  } catch {
-    return [];
-  }
+function pathForm(path, ignoreCase = IGNORE_CASE) {
+  const forward = resolve(path.replace(/\\/g, "/")).replace(/\\/g, "/").replace(/\/+$/, "");
+  return ignoreCase ? forward.toLowerCase() : forward;
 }
 
 // src/project/git-env.ts
@@ -201,20 +191,208 @@ function gitEnv(base) {
   return env;
 }
 
+// src/setup/file-mode.ts
+import { chmodSync, fchmodSync } from "fs";
+function failureIsFatal(platform) {
+  return platform !== "win32";
+}
+function setFileMode(fileOrFd, mode, platform = hostPlatform()) {
+  try {
+    if (typeof fileOrFd === "number")
+      fchmodSync(fileOrFd, mode);
+    else
+      chmodSync(fileOrFd, mode);
+  } catch (error) {
+    if (failureIsFatal(platform))
+      throw error;
+  }
+}
+
+// src/setup/lock.ts
+var FALLBACK_STALE_MS = 10 * 60 * 1000;
+
+// src/setup/write.ts
+import {
+  closeSync,
+  existsSync,
+  fsyncSync,
+  lstatSync,
+  mkdirSync,
+  openSync,
+  readdirSync,
+  readFileSync,
+  readlinkSync,
+  realpathSync,
+  renameSync,
+  statSync,
+  unlinkSync,
+  writeFileSync
+} from "fs";
+import { basename, dirname as dirname2, join as join3, resolve as resolve2 } from "path";
+function writeTemp(file, content, mode) {
+  const dir = dirname2(file);
+  mkdirSync(dir, { recursive: true });
+  const temp = join3(dir, `.${basename(file)}.cc-smart-dev-kit-tmp-${process.pid}-${crypto.randomUUID()}`);
+  try {
+    const fd = openSync(temp, "wx", mode);
+    try {
+      writeFileSync(fd, content);
+      fsyncSync(fd);
+    } finally {
+      closeSync(fd);
+    }
+    setFileMode(temp, mode);
+  } catch (error) {
+    if (existsSync(temp))
+      unlinkSync(temp);
+    throw error;
+  }
+  return temp;
+}
+function atomicWrite(file, content, mode, beforeRename) {
+  const temp = writeTemp(file, content, mode);
+  try {
+    beforeRename?.();
+    renameSync(temp, file);
+  } catch (error) {
+    if (existsSync(temp))
+      unlinkSync(temp);
+    throw error;
+  }
+}
+
+// src/workflow/reviews.ts
+var START_KEPT_MS = 24 * 60 * 60 * 1000;
+
+// src/hooks/git.ts
+var GIT_TIMED_OUT = "timed out";
+var GUARD_GIT_TIMEOUT_MS = 5000;
+function runGit(cwd, args, env, timeoutMs = 15000, own = {}, input) {
+  return spawnGit(cwd, args, env, timeoutMs, own, true, input);
+}
+function spawnGit(cwd, args, env, timeoutMs, own, trim, input) {
+  const bytes = input === undefined ? undefined : new TextEncoder().encode(input);
+  const run = spawnGitBytes(cwd, args, env, timeoutMs, own, bytes);
+  const out = new TextDecoder("utf-8", { ignoreBOM: true }).decode(run.out);
+  return { ...run, out: trim ? out.trim() : out };
+}
+function spawnGitBytes(cwd, args, env, timeoutMs, own, input) {
+  try {
+    const result = Bun.spawnSync(["git", ...args], {
+      cwd,
+      env: { ...gitEnv(env), ...own },
+      stdin: input ?? "ignore",
+      stdout: "pipe",
+      stderr: "pipe",
+      timeout: timeoutMs,
+      windowsHide: true
+    });
+    const err = result.signalCode ? GIT_TIMED_OUT : result.stderr.toString().trim();
+    const code = result.signalCode ? null : result.exitCode;
+    return { ok: result.exitCode === 0, out: result.stdout, err, code };
+  } catch (error) {
+    const err = messageOf(error);
+    return { ok: false, out: new Uint8Array, err, code: null };
+  }
+}
+function parseWorktreeList(porcelain) {
+  const worktrees = [];
+  for (const block of porcelain.split(/\r?\n\r?\n/)) {
+    const lines = block.split(/\r?\n/).filter((line) => line !== "");
+    const value = (key) => lines.find((line) => line.startsWith(`${key} `))?.slice(key.length + 1);
+    const flag = (key) => lines.some((line) => line === key || line.startsWith(`${key} `));
+    const path = value("worktree");
+    if (path === undefined)
+      continue;
+    const lockReason = value("locked")?.trim();
+    worktrees.push({
+      path,
+      head: value("HEAD") ?? "",
+      branch: value("branch")?.replace(/^refs\/heads\//, "") ?? null,
+      locked: flag("locked"),
+      ...lockReason === undefined || lockReason === "" ? {} : { lockReason },
+      prunable: flag("prunable"),
+      ...flag("bare") ? { bare: true } : {}
+    });
+  }
+  return worktrees;
+}
+function listWorktrees(cwd, env, timeoutMs = 15000) {
+  const listed = runGit(cwd, ["worktree", "list", "--porcelain"], env, timeoutMs);
+  if (!listed.ok)
+    throw new Error(`git worktree list failed: ${listed.err}`);
+  return parseWorktreeList(listed.out);
+}
+function hasChanges(folder, env) {
+  const status = runGit(folder, ["--no-optional-locks", "status", "--porcelain", "--untracked-files=all"], env);
+  return !status.ok || status.out !== "";
+}
+function worktreeAdminDir(worktree) {
+  let text;
+  try {
+    text = readFileSync2(join4(worktree, ".git"), "utf8");
+  } catch {
+    return null;
+  }
+  const target = /^gitdir:\s*(.+)$/.exec(text.trim())?.[1]?.trim();
+  return target === undefined || target === "" ? null : resolve3(worktree, target);
+}
+var REFLOG_HEADER = /^[a-f0-9]+ [a-f0-9]+ .*<[^<>]*> (\d+) [+-]\d{4}$/;
+function reflogEntryTime(line) {
+  const tab = line.indexOf("\t");
+  const epoch = REFLOG_HEADER.exec(tab < 0 ? line : line.slice(0, tab))?.[1];
+  if (epoch === undefined)
+    return null;
+  const time = Number(epoch) * 1000;
+  return Number.isFinite(time) ? time : null;
+}
+
+// src/project/config-facts.ts
+import { existsSync as existsSync2 } from "fs";
+
+// src/setup/user-json.ts
+import { readFileSync as readFileSync3 } from "fs";
+var BOM = "\uFEFF";
+function withoutBom(text) {
+  return text.startsWith(BOM) ? text.slice(BOM.length) : text;
+}
+function parseUserJson(text) {
+  return JSON.parse(withoutBom(text));
+}
+function readUserJson(file) {
+  return parseUserJson(readFileSync3(file, "utf8"));
+}
+
+// src/project/config-facts.ts
+var CONFIG_PATH = ".claude/cc-smart-dev-kit.json";
+function readOwnHooks(file) {
+  if (!existsSync2(file))
+    return null;
+  try {
+    const raw = readUserJson(file);
+    if (typeof raw !== "object" || raw === null || Array.isArray(raw))
+      return [];
+    const listed = raw.ownHooks;
+    return Array.isArray(listed) ? listed.filter((name) => typeof name === "string") : [];
+  } catch {
+    return [];
+  }
+}
+
 // src/project/locate.ts
 var MIN_GIT_VERSION = "2.31.0";
 var RESOLVE_GIT_TIMEOUT_MS = 5000;
 var GIT_NOT_FOUND = "git was not found, so this project's own values cannot be read. Install git, then try again.";
 function gitNotFound(error) {
-  const why = error instanceof Error ? error.message : String(error);
+  const why = messageOf(error);
   return /not found in \$PATH|ENOENT/.test(why) ? new Error(GIT_NOT_FOUND) : error;
 }
-var GIT_TIMED_OUT = "git did not answer in time";
+var GIT_TIMED_OUT2 = "git did not answer in time";
 var GIT_TIMED_OUT_FIX = "run `git status` in this folder; if that hangs too, fix git first, then run this again";
 
 class GitTimedOutError extends Error {
   constructor() {
-    super(`${GIT_TIMED_OUT}: ${GIT_TIMED_OUT_FIX}`);
+    super(`${GIT_TIMED_OUT2}: ${GIT_TIMED_OUT_FIX}`);
     this.name = "GitTimedOutError";
   }
 }
@@ -270,21 +448,13 @@ function mainCheckoutFrom(list, cwd) {
     throw new GitTimedOutError;
   if (!list.ok)
     throw new Error(`git worktree list failed in ${cwd}: ${list.stderr.trim()}`);
-  const [firstEntry = ""] = list.stdout.split(`
-
-`);
-  const lines = firstEntry.split(`
-`);
-  if (lines.includes("bare"))
+  const [main] = parseWorktreeList(list.stdout);
+  if (main === undefined || main.bare === true)
     return null;
-  const pathLine = lines.find((line) => line.startsWith("worktree "));
-  if (!pathLine)
-    return null;
-  const path = pathLine.slice("worktree ".length);
-  if (!existsSync2(path) || lines.some((line) => line.startsWith("prunable"))) {
-    throw new Error(`The main checkout of the repo at ${cwd} is missing: ${path} was moved or deleted. ` + 'If you moved it, run "git worktree repair" in its new folder.');
+  if (!existsSync3(main.path) || main.prunable) {
+    throw new Error(`The main checkout of the repo at ${cwd} is missing: ${main.path} was moved or deleted. ` + 'If you moved it, run "git worktree repair" in its new folder.');
   }
-  return realpathSync(path);
+  return realpathSync3(main.path);
 }
 function findMainCheckout(git, cwd) {
   return mainCheckoutFrom(git(["worktree", "list", "--porcelain"]), cwd);
@@ -299,12 +469,12 @@ function revParseParts(revParse) {
   return { common, gitDir, top };
 }
 function checkoutRoots(parts) {
-  const root = realpathSync(parts.top);
-  const commonDir = realpathSync(parts.common);
-  return { commonDir, isWorktree: realpathSync(parts.gitDir) !== commonDir, root };
+  const root = realpathSync3(parts.top);
+  const commonDir = realpathSync3(parts.common);
+  return { commonDir, isWorktree: realpathSync3(parts.gitDir) !== commonDir, root };
 }
 function locateCheckout(cwd, options = {}) {
-  if (!existsSync2(cwd) || !statSync(cwd).isDirectory()) {
+  if (!existsSync3(cwd) || !statSync2(cwd).isDirectory()) {
     throw new Error(`resolveProject: ${cwd} is not a folder`);
   }
   const git = gitIn(cwd, gitEnv(options.env ?? process.env), undefined, options.timeFor);
@@ -335,13 +505,13 @@ function locateCheckout(cwd, options = {}) {
 }
 function projectFileFor(checkout) {
   const { root, mainCheckout } = checkout;
-  const own = join3(root, CONFIG_PATH);
-  if (existsSync2(own))
+  const own = join5(root, CONFIG_PATH);
+  if (existsSync3(own))
     return own;
   if (mainCheckout === null || mainCheckout === root)
     return null;
-  const main = join3(mainCheckout, CONFIG_PATH);
-  return existsSync2(main) ? main : null;
+  const main = join5(mainCheckout, CONFIG_PATH);
+  return existsSync3(main) ? main : null;
 }
 function ownHooksOf(checkout) {
   const file = projectFileFor(checkout);
@@ -349,83 +519,11 @@ function ownHooksOf(checkout) {
 }
 
 // src/hooks/ask-log.ts
-import { join as join5 } from "path";
+import { join as join6 } from "path";
 
 // src/hooks/jsonl-log.ts
-import { appendFileSync, mkdirSync as mkdirSync2, readFileSync as readFileSync3, statSync as statSync3 } from "fs";
-import { dirname as dirname2 } from "path";
-
-// src/setup/write.ts
-import {
-  closeSync,
-  existsSync as existsSync3,
-  fsyncSync,
-  lstatSync,
-  mkdirSync,
-  openSync,
-  readdirSync,
-  readFileSync as readFileSync2,
-  readlinkSync,
-  realpathSync as realpathSync2,
-  renameSync,
-  statSync as statSync2,
-  unlinkSync,
-  writeFileSync
-} from "fs";
-import { basename, dirname, join as join4, resolve } from "path";
-
-// src/setup/file-mode.ts
-import { chmodSync, fchmodSync } from "fs";
-function failureIsFatal(platform) {
-  return platform !== "win32";
-}
-function setFileMode(fileOrFd, mode, platform = hostPlatform()) {
-  try {
-    if (typeof fileOrFd === "number")
-      fchmodSync(fileOrFd, mode);
-    else
-      chmodSync(fileOrFd, mode);
-  } catch (error) {
-    if (failureIsFatal(platform))
-      throw error;
-  }
-}
-
-// src/setup/write.ts
-function writeTemp(file, content, mode) {
-  const dir = dirname(file);
-  mkdirSync(dir, { recursive: true });
-  const temp = join4(dir, `.${basename(file)}.cc-smart-dev-kit-tmp-${process.pid}-${crypto.randomUUID()}`);
-  try {
-    const fd = openSync(temp, "wx", mode);
-    try {
-      writeFileSync(fd, content);
-      fsyncSync(fd);
-    } finally {
-      closeSync(fd);
-    }
-    setFileMode(temp, mode);
-  } catch (error) {
-    if (existsSync3(temp))
-      unlinkSync(temp);
-    throw error;
-  }
-  return temp;
-}
-function atomicWrite(file, content, mode, beforeRename) {
-  const temp = writeTemp(file, content, mode);
-  try {
-    beforeRename?.();
-    renameSync(temp, file);
-  } catch (error) {
-    if (existsSync3(temp))
-      unlinkSync(temp);
-    throw error;
-  }
-}
-
-// src/setup/lock.ts
-var FALLBACK_STALE_MS = 10 * 60 * 1000;
+import { appendFileSync, mkdirSync as mkdirSync2, readFileSync as readFileSync4, statSync as statSync3 } from "fs";
+import { dirname as dirname4 } from "path";
 
 // src/update/state.ts
 var CHECK_INTERVAL_MS = 60 * 60 * 1000;
@@ -443,13 +541,13 @@ function cutBack(file) {
   }
   if (size <= LOG_MAX_BYTES)
     return;
-  const text = readFileSync3(file, "utf8");
+  const text = readFileSync4(file, "utf8");
   const keep = text.slice(text.length - LOG_MAX_BYTES / 2);
   atomicWrite(file, keep.slice(keep.indexOf(`
 `) + 1), 384);
 }
 function appendJsonLine(file, value) {
-  mkdirSync2(dirname2(file), { recursive: true, mode: 448 });
+  mkdirSync2(dirname4(file), { recursive: true, mode: 448 });
   cutBack(file);
   appendFileSync(file, `${JSON.stringify(value)}
 `, { mode: 384 });
@@ -459,7 +557,7 @@ function appendJsonLine(file, value) {
 var ASK_LOG_FILE = "guard-asks.jsonl";
 var ASK_REASON_MAX = 200;
 function askLogFile(stateDir) {
-  return join5(stateDir, ASK_LOG_FILE);
+  return join6(stateDir, ASK_LOG_FILE);
 }
 function appendAsk(file, ask) {
   appendJsonLine(file, ask);
@@ -473,15 +571,15 @@ import {
   existsSync as existsSync4,
   mkdirSync as mkdirSync3,
   readdirSync as readdirSync2,
-  readFileSync as readFileSync4,
+  readFileSync as readFileSync5,
   statSync as statSync4,
   unlinkSync as unlinkSync2
 } from "fs";
-import { dirname as dirname3, join as join6 } from "path";
+import { dirname as dirname5, join as join7 } from "path";
 
 // src/build-info/index.ts
 var info = {
-  version: "6.7.1",
+  version: "6.7.2",
   repo: "sellanybiz/cc-smart-dev-kit",
   dependencies: [
     {
@@ -503,7 +601,7 @@ var PLUGIN_INSTALL_COMMAND = `claude plugin install ${PLUGIN_ID}`;
 var PLUGIN_UPDATE_COMMAND = `claude plugin update ${PLUGIN_ID}`;
 
 // src/hooks/checked-config.ts
-var PARSER_FINGERPRINT = "cf83d28a9adcc460bb6ed14ca8396360e3e093bc64ef4a44a7d36ab2374eb526";
+var PARSER_FINGERPRINT = "017ad9b973a1e5beca067c00474a5584289769924b661251e57e92c9f2769237";
 var CHECKED_DIR = "checked";
 var CHECKED_CACHE_LIMIT = 64;
 var CHECKED_FILE_MAX_BYTES = 256 * 1024;
@@ -518,8 +616,8 @@ function reinstallMessage(why) {
   return `The plugin's config checker is not usable (${why}): run \`${PLUGIN_INSTALL_COMMAND}\` to reinstall the plugin, then try again.`;
 }
 async function loadSibling() {
-  const built = join6(import.meta.dir, "config-check.js");
-  const entry = existsSync4(built) ? built : join6(import.meta.dir, "..", "entries", "config-check.ts");
+  const built = join7(import.meta.dir, "config-check.js");
+  const entry = existsSync4(built) ? built : join7(import.meta.dir, "..", "entries", "config-check.ts");
   const loaded = await import(entry);
   for (const name of ["checkProjectText", "checkWorkflowText"]) {
     if (typeof loaded[name] !== "function") {
@@ -535,7 +633,7 @@ ${kind}
 }
 function readEntry(file, key, kind) {
   try {
-    const entry = JSON.parse(readFileSync4(file, "utf8"));
+    const entry = JSON.parse(readFileSync5(file, "utf8"));
     if (entry?.format !== ENTRY_FORMAT || entry.key !== key || entry.kind !== kind)
       return null;
     const { value } = entry;
@@ -548,7 +646,7 @@ function readEntry(file, key, kind) {
 function prune(dir, nowMs) {
   const entries = [];
   for (const name of readdirSync2(dir)) {
-    const path = join6(dir, name);
+    const path = join7(dir, name);
     try {
       if (TEMP_NAME.test(name)) {
         if (nowMs - statSync4(path).mtimeMs > CHECKED_TEMP_MAX_AGE_MS)
@@ -573,18 +671,18 @@ function writeEntry(dir, key, kind, value) {
     }
     prune(dir, Date.now());
     const entry = { format: ENTRY_FORMAT, key, kind, value };
-    atomicWrite(join6(dir, `${key}.json`), JSON.stringify(entry), 384);
+    atomicWrite(join7(dir, `${key}.json`), JSON.stringify(entry), 384);
   } catch {}
 }
 async function loadCheckedFile(file, kind, { paths }) {
   if (!existsSync4(file))
     return { ok: true, value: null, fact: "none" };
-  const bytes = readFileSync4(file);
+  const bytes = readFileSync5(file);
   const cacheable = bytes.length <= CHECKED_FILE_MAX_BYTES;
-  const dir = join6(paths.stateDir, CHECKED_DIR);
+  const dir = join7(paths.stateDir, CHECKED_DIR);
   const key = checkedKey(PARSER_FINGERPRINT, kind, bytes);
   if (cacheable) {
-    const hit = readEntry(join6(dir, `${key}.json`), key, kind);
+    const hit = readEntry(join7(dir, `${key}.json`), key, kind);
     if (hit !== null)
       return { ok: true, value: hit, fact: "cached" };
   }
@@ -668,9 +766,6 @@ function addContextAndMessage(event, text, message) {
 
 // src/hooks/run.ts
 var HOOK_LOG_ENV = "CC_SMART_DEV_KIT_HOOK_LOG";
-function errorMessage(error) {
-  return error instanceof Error ? error.message : String(error);
-}
 function crashResult(spec, why, input, event, context) {
   const line = {
     exitCode: spec.crashExitCode ?? 0,
@@ -697,7 +792,7 @@ function recordAsk(spec, input, result, context) {
       reason: maskedLine(reason, [], ASK_REASON_MAX, { mark: "..." })
     });
   } catch (error) {
-    const note = `cc-smart-dev-kit ${spec.name}: the ask could not be recorded (${errorMessage(error)})`;
+    const note = `cc-smart-dev-kit ${spec.name}: the ask could not be recorded (${messageOf(error)})`;
     return { ...result, stderr: result.stderr === undefined ? note : `${result.stderr}
 ${note}` };
   }
@@ -722,7 +817,7 @@ async function answer(spec, input, context, observed) {
     try {
       checkout = locateCheckout(cwd, { env });
     } catch (error) {
-      return await outside(input, event, errorMessage(error), context);
+      return await outside(input, event, messageOf(error), context);
     }
     if (checkout === null)
       return await outside(input, event, `${cwd} is not in a git checkout`, context);
@@ -744,7 +839,7 @@ async function answer(spec, input, context, observed) {
       ...context.start !== undefined && { start: context.start }
     });
   } catch (error) {
-    return crashResult(spec, errorMessage(error), input, event, context);
+    return crashResult(spec, messageOf(error), input, event, context);
   }
 }
 async function handleHook(spec, text, env, nowMs = Date.now(), start, observed = {}) {
@@ -796,7 +891,7 @@ import { closeSync as closeSync3, existsSync as existsSync7, fstatSync, openSync
 import { basename as basename5, join as join13, resolve as resolve5 } from "path";
 
 // src/worktrees/auto-start.ts
-import { basename as basename3, join as join9 } from "path";
+import { basename as basename4, join as join10 } from "path";
 
 // src/hooks/attended.ts
 function isAttended(env) {
@@ -882,22 +977,22 @@ function startDetached(platform, argv, options) {
 }
 
 // src/setup/bun-config.ts
-import { basename as basename2, join as join7 } from "path";
+import { basename as basename3, join as join8 } from "path";
 var BUN_CONFIG_NAME = "bunfig.toml";
 function bunConfigPath(pluginDir) {
-  return join7(pluginDir, BUN_CONFIG_NAME);
+  return join8(pluginDir, BUN_CONFIG_NAME);
 }
 function bunConfigArg(pluginDir) {
   return `--config=${bunConfigPath(pluginDir)}`;
 }
 function pluginFolderBeside(importDir) {
-  return basename2(importDir) === "dist" ? join7(importDir, "..") : join7(importDir, "..", "..", "plugin");
+  return basename3(importDir) === "dist" ? join8(importDir, "..") : join8(importDir, "..", "..", "plugin");
 }
 
 // src/worktrees/auto-state.ts
 import { createHash as createHash2 } from "crypto";
-import { mkdirSync as mkdirSync4, readFileSync as readFileSync5 } from "fs";
-import { dirname as dirname5, join as join8 } from "path";
+import { mkdirSync as mkdirSync4, readFileSync as readFileSync6 } from "fs";
+import { dirname as dirname6, join as join9 } from "path";
 
 // node_modules/zod/v4/core/util.js
 function getEnumValues(entries) {
@@ -6286,19 +6381,6 @@ function refine(fn, _params = {}) {
 function superRefine(fn, params) {
   return _superRefine(fn, params);
 }
-// src/path-compare.ts
-import { dirname as dirname4, resolve as resolve2 } from "path";
-var IGNORE_CASE = process.platform === "win32";
-function isInside(path, folder, ignoreCase = IGNORE_CASE) {
-  const child = pathForm(path, ignoreCase);
-  const parent = pathForm(folder, ignoreCase);
-  return child === parent || child.startsWith(`${parent}/`);
-}
-function pathForm(path, ignoreCase = IGNORE_CASE) {
-  const forward = resolve2(path.replace(/\\/g, "/")).replace(/\\/g, "/").replace(/\/+$/, "");
-  return ignoreCase ? forward.toLowerCase() : forward;
-}
-
 // src/worktrees/auto-state.ts
 var AUTO_CLEAN_INTERVAL_MS = 60 * 60 * 1000;
 var TOLD_NAMES_MAX = 8;
@@ -6319,27 +6401,27 @@ var recordSchema = object({
 });
 var toldSchema = object({ seq: number2() });
 function autoCleanLog(stateDir) {
-  return join8(stateDir, "worktrees-auto-clean.log");
+  return join9(stateDir, "worktrees-auto-clean.log");
 }
 function autoCleanFiles(stateDir, repo) {
   const key = createHash2("sha256").update(pathForm(repo)).digest("hex").slice(0, 16);
-  const dir = join8(stateDir, "worktrees-auto-clean");
+  const dir = join9(stateDir, "worktrees-auto-clean");
   return {
     log: autoCleanLog(stateDir),
-    result: join8(dir, `${key}.json`),
-    told: join8(dir, `${key}.told.json`)
+    result: join9(dir, `${key}.json`),
+    told: join9(dir, `${key}.told.json`)
   };
 }
 function readJson(file, schema) {
   try {
-    const parsed = schema.safeParse(JSON.parse(readFileSync5(file, "utf8")));
+    const parsed = schema.safeParse(JSON.parse(readFileSync6(file, "utf8")));
     return parsed.success ? parsed.data : null;
   } catch {
     return null;
   }
 }
 function writeJson(file, value) {
-  mkdirSync4(dirname5(file), { recursive: true, mode: 448 });
+  mkdirSync4(dirname6(file), { recursive: true, mode: 448 });
   atomicWrite(file, `${JSON.stringify(value, null, 2)}
 `, 384);
 }
@@ -6376,7 +6458,7 @@ function autoCleanOn(context) {
   return context.project.config?.worktrees?.autoClean !== false;
 }
 function autoCleanEntry(importDir) {
-  return basename3(importDir) === "dist" ? join9(importDir, `${AUTO_CLEAN_BUNDLE}.js`) : join9(importDir, "..", "entries", `${AUTO_CLEAN_BUNDLE}.ts`);
+  return basename4(importDir) === "dist" ? join10(importDir, `${AUTO_CLEAN_BUNDLE}.js`) : join10(importDir, "..", "entries", `${AUTO_CLEAN_BUNDLE}.ts`);
 }
 function autoCleanArgv(bun, entry, pluginDir, repo, trigger, keep) {
   return [bun, "--no-env-file", bunConfigArg(pluginDir), entry, repo, trigger, keep];
@@ -6419,97 +6501,6 @@ function takeToldLine(context, repo) {
 // src/worktrees/in-progress.ts
 import { existsSync as existsSync5, readFileSync as readFileSync7, statSync as statSync5 } from "fs";
 import { resolve as resolve4 } from "path";
-
-// src/hooks/git.ts
-import { readFileSync as readFileSync6, realpathSync as realpathSync3 } from "fs";
-import { basename as basename4, dirname as dirname6, join as join10, resolve as resolve3 } from "path";
-
-// src/workflow/reviews.ts
-var START_KEPT_MS = 24 * 60 * 60 * 1000;
-
-// src/hooks/git.ts
-var GIT_TIMED_OUT2 = "timed out";
-var GUARD_GIT_TIMEOUT_MS = 5000;
-function runGit(cwd, args, env, timeoutMs = 15000, own = {}, input) {
-  return spawnGit(cwd, args, env, timeoutMs, own, true, input);
-}
-function spawnGit(cwd, args, env, timeoutMs, own, trim, input) {
-  const bytes = input === undefined ? undefined : new TextEncoder().encode(input);
-  const run = spawnGitBytes(cwd, args, env, timeoutMs, own, bytes);
-  const out = new TextDecoder("utf-8", { ignoreBOM: true }).decode(run.out);
-  return { ...run, out: trim ? out.trim() : out };
-}
-function spawnGitBytes(cwd, args, env, timeoutMs, own, input) {
-  try {
-    const result = Bun.spawnSync(["git", ...args], {
-      cwd,
-      env: { ...gitEnv(env), ...own },
-      stdin: input ?? "ignore",
-      stdout: "pipe",
-      stderr: "pipe",
-      timeout: timeoutMs,
-      windowsHide: true
-    });
-    const err = result.signalCode ? GIT_TIMED_OUT2 : result.stderr.toString().trim();
-    const code = result.signalCode ? null : result.exitCode;
-    return { ok: result.exitCode === 0, out: result.stdout, err, code };
-  } catch (error) {
-    const err = error instanceof Error ? error.message : String(error);
-    return { ok: false, out: new Uint8Array, err, code: null };
-  }
-}
-function parseWorktreeList(porcelain) {
-  const worktrees = [];
-  for (const block of porcelain.split(/\r?\n\r?\n/)) {
-    const lines = block.split(/\r?\n/).filter((line) => line !== "");
-    const value = (key) => lines.find((line) => line.startsWith(`${key} `))?.slice(key.length + 1);
-    const flag = (key) => lines.some((line) => line === key || line.startsWith(`${key} `));
-    const path = value("worktree");
-    if (path === undefined)
-      continue;
-    const lockReason = value("locked")?.trim();
-    worktrees.push({
-      path,
-      head: value("HEAD") ?? "",
-      branch: value("branch")?.replace(/^refs\/heads\//, "") ?? null,
-      locked: flag("locked"),
-      ...lockReason === undefined || lockReason === "" ? {} : { lockReason },
-      prunable: flag("prunable")
-    });
-  }
-  return worktrees;
-}
-function listWorktrees(cwd, env, timeoutMs = 15000) {
-  const listed = runGit(cwd, ["worktree", "list", "--porcelain"], env, timeoutMs);
-  if (!listed.ok)
-    throw new Error(`git worktree list failed: ${listed.err}`);
-  return parseWorktreeList(listed.out);
-}
-function hasChanges(folder, env) {
-  const status = runGit(folder, ["--no-optional-locks", "status", "--porcelain", "--untracked-files=all"], env);
-  return !status.ok || status.out !== "";
-}
-function worktreeAdminDir(worktree) {
-  let text;
-  try {
-    text = readFileSync6(join10(worktree, ".git"), "utf8");
-  } catch {
-    return null;
-  }
-  const target = /^gitdir:\s*(.+)$/.exec(text.trim())?.[1]?.trim();
-  return target === undefined || target === "" ? null : resolve3(worktree, target);
-}
-var REFLOG_HEADER = /^[a-f0-9]+ [a-f0-9]+ .*<[^<>]*> (\d+) [+-]\d{4}$/;
-function reflogEntryTime(line) {
-  const tab = line.indexOf("\t");
-  const epoch = REFLOG_HEADER.exec(tab < 0 ? line : line.slice(0, tab))?.[1];
-  if (epoch === undefined)
-    return null;
-  const time = Number(epoch) * 1000;
-  return Number.isFinite(time) ? time : null;
-}
-
-// src/worktrees/in-progress.ts
 var BISECT = { ending: "`git bisect reset`", what: "a bisect" };
 var REBASE = { ending: "`git rebase --abort`", what: "a rebase" };
 var AM = { ending: "`git am --abort`", what: "a git am" };

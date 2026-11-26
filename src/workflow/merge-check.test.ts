@@ -6,10 +6,11 @@
  * a review of 100 lines in 2 files, then a fix, exactly as `workflow merge-check` sees them.
  */
 import { describe, expect, test } from "bun:test";
-import { chmodSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
-import { delimiter, dirname, join } from "node:path";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { cliPaths } from "../cli/paths";
 import { locateCheckout } from "../project/resolve";
+import { fakeGhEnv } from "../testing/fake-gh";
 import { hookEnv, makeClone, writeClaudeFile } from "../testing/hooks";
 import { cleanGitEnv, git, tempDir } from "../testing/temp";
 import {
@@ -1544,14 +1545,8 @@ describe("requiredChecks: a branch with no required checks", () => {
 
   describe.skipIf(process.platform === "win32")("through the real gh executor", () => {
     /** A PATH of one fake `gh` that runs `script`, then the system's own basics. */
-    function withGh(script: string): Record<string, string> {
-      const bin = tempDir("fake-gh-bin");
-      writeFileSync(join(bin, "gh"), `#!/bin/sh\n${script}\n`);
-      chmodSync(join(bin, "gh"), 0o755);
-      return { ...cleanGitEnv(), PATH: `${bin}${delimiter}/usr/bin${delimiter}/bin` };
-    }
     const checksOf = (script: string) =>
-      requiredChecks(7, null, tempDir("gh-folder"), withGh(script), 5_000);
+      requiredChecks(7, null, tempDir("gh-folder"), fakeGhEnv(script), 5_000);
 
     test("stderr and exit 1: no checks, as an empty list", async () => {
       expect(await checksOf(`echo "${NONE}" >&2; exit 1`)).toEqual([]);

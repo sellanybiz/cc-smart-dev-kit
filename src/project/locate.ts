@@ -1,5 +1,7 @@
 import { existsSync, realpathSync, statSync } from "node:fs";
 import { join } from "node:path";
+import { messageOf } from "../error-message";
+import { parseWorktreeList } from "../hooks/git";
 import { CONFIG_PATH, readOwnHooks } from "./config-facts";
 import { gitEnv } from "./git-env";
 
@@ -73,7 +75,7 @@ type GitAsync = (args: string[]) => Promise<GitResult>;
 
 /** What a failed spawn says when there is no git at all, in words a page can act on. */
 function gitNotFound(error: unknown): unknown {
-  const why = error instanceof Error ? error.message : String(error);
+  const why = messageOf(error);
   // No git on this machine's PATH at all — on Windows without Git for Windows, or in a
   // container. The spawner's own words for it (`Executable not found in $PATH: "git"`)
   // reach a portal page, where they read as a crash rather than as a fact to act on. A
@@ -108,7 +110,7 @@ export class GitTimedOutError extends Error {
  */
 export function checkoutFailure(error: unknown): string {
   if (error instanceof GitTimedOutError) return GIT_TIMED_OUT;
-  return error instanceof Error ? error.message : String(error);
+  return messageOf(error);
 }
 
 /** What a call answers when its shared budget has no time left: it was never made. */
@@ -217,25 +219,21 @@ async function requireGitVersionAsync(git: GitAsync): Promise<void> {
 }
 
 /**
- * The first `worktree` entry of `git worktree list --porcelain` is the main checkout: the
- * one parse both readers of the list use.
+ * The first entry of `git worktree list --porcelain` is the main checkout: the one answer
+ * both readers of the list give.
  */
 function mainCheckoutFrom(list: GitResult, cwd: string): string | null {
   if (list.timedOut === true) throw new GitTimedOutError();
   if (!list.ok) throw new Error(`git worktree list failed in ${cwd}: ${list.stderr.trim()}`);
-  const [firstEntry = ""] = list.stdout.split("\n\n");
-  const lines = firstEntry.split("\n");
-  if (lines.includes("bare")) return null;
-  const pathLine = lines.find((line) => line.startsWith("worktree "));
-  if (!pathLine) return null;
-  const path = pathLine.slice("worktree ".length);
-  if (!existsSync(path) || lines.some((line) => line.startsWith("prunable"))) {
+  const [main] = parseWorktreeList(list.stdout);
+  if (main === undefined || main.bare === true) return null;
+  if (!existsSync(main.path) || main.prunable) {
     throw new Error(
-      `The main checkout of the repo at ${cwd} is missing: ${path} was moved or deleted. ` +
+      `The main checkout of the repo at ${cwd} is missing: ${main.path} was moved or deleted. ` +
         'If you moved it, run "git worktree repair" in its new folder.',
     );
   }
-  return realpathSync(path);
+  return realpathSync(main.path);
 }
 
 function findMainCheckout(git: Git, cwd: string): string | null {

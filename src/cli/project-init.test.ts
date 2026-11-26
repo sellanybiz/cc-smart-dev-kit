@@ -1,18 +1,12 @@
 /** `cc-smart-dev-kit project init`: the flags, the defaults from the repo, and the run. */
 import { describe, expect, setDefaultTimeout, test } from "bun:test";
-import {
-  chmodSync,
-  existsSync,
-  mkdirSync,
-  readFileSync,
-  symlinkSync,
-  writeFileSync,
-} from "node:fs";
-import { delimiter, dirname, join } from "node:path";
+import { existsSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { COMMAND } from "../build-info/names";
 import { parseCcSmartDevKitConfig } from "../project/config";
 import { staleBlocks } from "../project/deploy-skill";
 import type { DeployEnv } from "../tasks/deploy/format";
+import { fakeGhEnv } from "../testing/fake-gh";
 import { hookEnv, makeRepo } from "../testing/hooks";
 import { subprocessGuard } from "../testing/port-guard";
 import { cleanGitEnv, git, tempDir } from "../testing/temp";
@@ -343,13 +337,9 @@ describe("the defaults from the repo", () => {
     async () => {
       const repo = makeRepo("project-init-gh");
       git(repo, "remote", "add", "origin", "git@github.com:example-org/my-app.git");
-      const bin = tempDir("project-init-gh-bin");
-      writeFileSync(
-        join(bin, "gh"),
-        '#!/bin/sh\n[ "$2" = "repos/example-org/my-app/rulesets?per_page=100" ] || exit 1\necho refs/heads/main\n',
+      const env = fakeGhEnv(
+        '[ "$2" = "repos/example-org/my-app/rulesets?per_page=100" ] || exit 1\necho refs/heads/main',
       );
-      chmodSync(join(bin, "gh"), 0o755);
-      const env = { ...cleanGitEnv(), PATH: `${bin}${delimiter}/usr/bin${delimiter}/bin` };
       expect(await protectedFromGithub(realRunner(env), repo)).toEqual(["main"]);
       expect(await protectedFromGithub(realRunnerAsync(env), repo)).toEqual(["main"]);
       const noGh = { ...env, PATH: tempDir("project-init-no-gh") };
@@ -363,9 +353,6 @@ describe("the defaults from the repo", () => {
     () => {
       // A long-lived portal keeps the folder of the session that started it, often a worktree
       // that is removed later. Run in a child, so the test runner's own folder stays.
-      const bin = tempDir("project-init-gone-bin");
-      writeFileSync(join(bin, "gh"), "#!/bin/sh\necho answered\n");
-      chmodSync(join(bin, "gh"), 0o755);
       const script = join(tempDir("project-init-gone-script"), "probe.ts");
       writeFileSync(
         script,
@@ -378,9 +365,7 @@ describe("the defaults from the repo", () => {
           'console.log(JSON.stringify(await gh?.(["api", "x"])));',
         ].join("\n"),
       );
-      const run = Bun.spawnSync([process.execPath, script], {
-        env: { ...cleanGitEnv(), PATH: `${bin}${delimiter}/usr/bin${delimiter}/bin` },
-      });
+      const run = Bun.spawnSync([process.execPath, script], { env: fakeGhEnv("echo answered") });
       expect(run.stderr.toString()).toBe("");
       // The fake's own `sh` says on stderr that its folder is gone; gh's answer is what counts.
       const answer = JSON.parse(run.stdout.toString());

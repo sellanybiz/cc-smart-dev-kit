@@ -7,7 +7,7 @@ var COMMAND = "cc-smart-dev-kit";
 
 // src/build-info/index.ts
 var info = {
-  version: "6.7.1",
+  version: "6.7.2",
   repo: "sellanybiz/cc-smart-dev-kit",
   dependencies: [
     {
@@ -224,6 +224,11 @@ function isOlder(a, b) {
   } catch {
     return false;
   }
+}
+
+// src/error-message.ts
+function messageOf(error) {
+  return error instanceof Error ? error.message : String(error);
 }
 
 // src/jobs/hook-folder.ts
@@ -3360,9 +3365,6 @@ function registerSession(files, pid, version) {
 }
 
 // src/update/background.ts
-function messageOf(error) {
-  return error instanceof Error ? error.message : String(error);
-}
 function optOutDetail(name) {
   return `${name} is set`;
 }

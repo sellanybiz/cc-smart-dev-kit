@@ -10,6 +10,11 @@ test("machine path shares the workflow config folder", () => {
   const paths = cliPaths({ HOME: tempDir() });
   expect(paths.machinesFile).toBe(join(dirname(paths.workflowConfigFile), "machines.json"));
 });
+test("a machine list saved with a byte order mark reads", () => {
+  const file = join(tempDir(), "machines.json");
+  writeFileSync(file, '﻿{"version":1,"machines":{"remote":{"allow":true}}}');
+  expect(machineRule(readMachines(file), "remote")).toBe("free");
+});
 test("machine rules and locked private writes", async () => {
   const dir = tempDir(),
     file = join(dir, "config", "machines.json"),

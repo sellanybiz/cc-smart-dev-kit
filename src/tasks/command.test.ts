@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { expect, setDefaultTimeout, test } from "bun:test";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { cliPaths } from "../cli/paths";
@@ -6,9 +6,12 @@ import { claudeMemDb, mistakenImport } from "../testing/claude-mem-db";
 import { writeSessionRecord } from "../testing/hooks";
 import { subprocessGuard } from "../testing/port-guard";
 import { cleanGitEnv, git, tempDir } from "../testing/temp";
+import { PROCESS_TEST_TIMEOUT_MS } from "../testing/timeouts";
 import { taskContext } from "./context";
 import { openWorkDb, workDbFile } from "./work/db";
 import { addNote } from "./work/store";
+
+setDefaultTimeout(PROCESS_TEST_TIMEOUT_MS);
 
 const CLI = join(import.meta.dir, "../entries/cli.ts");
 test("task command creates, lists, completes and checks as a process", async () => {

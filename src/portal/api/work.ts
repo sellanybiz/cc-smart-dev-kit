@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { messageOf } from "../../error-message";
 import { historyDbExists } from "../../gateway/history";
 import {
   bucketStart,
@@ -83,7 +84,7 @@ async function repoOf(
     if (checkout === null) return { kind: "none" };
     return { kind: "repo", repo: checkout.mainCheckout ?? checkout.root };
   } catch (error) {
-    return { kind: "error", why: error instanceof Error ? error.message : String(error) };
+    return { kind: "error", why: messageOf(error) };
   }
 }
 
@@ -96,11 +97,6 @@ async function repoOf(
 async function listedWorktrees(repo: string, env: Env): Promise<ListedWorktree[] | null> {
   const listed = await runGitAsync(repo, ["worktree", "list", "--porcelain"], env);
   return listed.ok ? parseWorktreeList(listed.out) : null;
-}
-
-/** Why a thrown thing happened, in one line. */
-function _reasonOf(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
 }
 
 export async function workAnswer(deps: PageDataDeps): Promise<WorkAnswer> {

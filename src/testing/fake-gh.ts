@@ -4,7 +4,22 @@
  * arguments and that nothing reached GitHub. `mode` makes every call fail the way a missing
  * `gh`, a logged-out one or a timeout does.
  */
+import { chmodSync, writeFileSync } from "node:fs";
+import { delimiter, join } from "node:path";
 import type { GhCall, GhExec, GhResult } from "../workflow/merge-check";
+import { cleanGitEnv, tempDir } from "./temp";
+
+/**
+ * An environment whose `gh` is a small `sh` script running `script`, first on a PATH that also
+ * holds the system's own basics: for a test of the real runners (`runGh`, `runGhSync`), which
+ * spawn whatever `gh` the PATH names.
+ */
+export function fakeGhEnv(script: string): Record<string, string> {
+  const bin = tempDir("fake-gh-bin");
+  writeFileSync(join(bin, "gh"), `#!/bin/sh\n${script}\n`);
+  chmodSync(join(bin, "gh"), 0o755);
+  return { ...cleanGitEnv(), PATH: `${bin}${delimiter}/usr/bin${delimiter}/bin` };
+}
 
 /** The account the fake's `gh` is logged in as, unless a test names another. */
 export const FAKE_LOGIN = "kit-account";

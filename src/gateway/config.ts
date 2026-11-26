@@ -15,13 +15,15 @@
  */
 
 import { createHash } from "node:crypto";
-import { mkdirSync, readFileSync, statSync } from "node:fs";
+import { mkdirSync, statSync } from "node:fs";
 import { dirname } from "node:path";
 import { z } from "zod";
+import { messageOf } from "../error-message";
 // From ./names, not the index: the index bakes in the version, and the router bundle
 // must not change with it (a changed bundle restarts every machine's router).
 import { hostPlatform } from "../machine/host";
 import { isOwnerOnly } from "../setup/file-mode";
+import { readUserJson } from "../setup/user-json";
 import { atomicWrite } from "../setup/write";
 import { HISTORY_MAX_RETENTION_DAYS, HISTORY_RETENTION_DAYS } from "./history";
 import {
@@ -832,10 +834,9 @@ export function judgeStandInState(
   return fallbackOn(config, JUDGE_SLOT) ? "ready" : "off";
 }
 
-/** The words of a caught error, whatever was thrown. */
-export function messageOf(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}
+// Its home is `src/error-message.ts`; many files have always imported it from here, so
+// this file hands it on rather than every one of them changing its import.
+export { messageOf };
 
 /** A config file that cannot be used, with the reason in words. */
 export class ConfigError extends Error {
@@ -900,7 +901,7 @@ export function loadConfigFile(
   }
   let raw: unknown;
   try {
-    raw = JSON.parse(readFileSync(path, "utf8"));
+    raw = readUserJson(path);
   } catch (error) {
     // Not the parser's message: it can quote the text around the mistake, a key included.
     throw new ConfigError(`${path} is not valid JSON. Fix it by hand.`, { cause: error });

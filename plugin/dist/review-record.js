@@ -95,6 +95,11 @@ function claudeMemDataDir(env, home) {
   return dir.startsWith("~/") ? join2(home, dir.slice(2)) : dir;
 }
 
+// src/error-message.ts
+function messageOf(error) {
+  return error instanceof Error ? error.message : String(error);
+}
+
 // src/gateway/plain-text.ts
 var CONTROL = /[\p{Cc}\p{Cf}]/gu;
 var CONTROL_BUT_LINES = /[^\P{Cc}\n\t]|\p{Cf}/gu;
@@ -145,40 +150,11 @@ function maskedLine(text, known, max, options = {}) {
 }
 
 // src/project/locate.ts
-import { existsSync as existsSync2, realpathSync, statSync } from "fs";
-import { join as join3 } from "path";
+import { existsSync as existsSync3, realpathSync as realpathSync2, statSync as statSync3 } from "fs";
+import { join as join6 } from "path";
 
-// src/project/config-facts.ts
-import { existsSync } from "fs";
-
-// src/setup/user-json.ts
-import { readFileSync } from "fs";
-var BOM = "\uFEFF";
-function withoutBom(text) {
-  return text.startsWith(BOM) ? text.slice(BOM.length) : text;
-}
-function parseUserJson(text) {
-  return JSON.parse(withoutBom(text));
-}
-function readUserJson(file) {
-  return parseUserJson(readFileSync(file, "utf8"));
-}
-
-// src/project/config-facts.ts
-var CONFIG_PATH = ".claude/cc-smart-dev-kit.json";
-function readOwnHooks(file) {
-  if (!existsSync(file))
-    return null;
-  try {
-    const raw = readUserJson(file);
-    if (typeof raw !== "object" || raw === null || Array.isArray(raw))
-      return [];
-    const listed = raw.ownHooks;
-    return Array.isArray(listed) ? listed.filter((name) => typeof name === "string") : [];
-  } catch {
-    return [];
-  }
-}
+// src/path-compare.ts
+var IGNORE_CASE = process.platform === "win32";
 
 // src/project/git-env.ts
 var REPO_SELECTING_GIT_VARS = [
@@ -200,178 +176,24 @@ function gitEnv(base) {
   return env;
 }
 
-// src/project/locate.ts
-var MIN_GIT_VERSION = "2.31.0";
-var RESOLVE_GIT_TIMEOUT_MS = 5000;
-var GIT_NOT_FOUND = "git was not found, so this project's own values cannot be read. Install git, then try again.";
-function gitNotFound(error) {
-  const why = error instanceof Error ? error.message : String(error);
-  return /not found in \$PATH|ENOENT/.test(why) ? new Error(GIT_NOT_FOUND) : error;
-}
-var GIT_TIMED_OUT = "git did not answer in time";
-var GIT_TIMED_OUT_FIX = "run `git status` in this folder; if that hangs too, fix git first, then run this again";
+// src/workflow/reviews.ts
+import { createHash } from "crypto";
+import { mkdirSync as mkdirSync3, readFileSync as readFileSync3 } from "fs";
+import { dirname as dirname2, join as join5 } from "path";
 
-class GitTimedOutError extends Error {
-  constructor() {
-    super(`${GIT_TIMED_OUT}: ${GIT_TIMED_OUT_FIX}`);
-    this.name = "GitTimedOutError";
-  }
-}
-var NO_TIME_LEFT = {
-  ok: false,
-  stdout: "",
-  stderr: "no time left in the hook's budget",
-  timedOut: true
-};
-function callLimit(timeoutMs, timeFor) {
-  return timeFor === undefined ? timeoutMs : timeFor(timeoutMs);
-}
-function gitIn(cwd, env, timeoutMs = RESOLVE_GIT_TIMEOUT_MS, timeFor) {
-  return (args) => {
-    const limit = callLimit(timeoutMs, timeFor);
-    if (limit <= 0)
-      return NO_TIME_LEFT;
-    try {
-      const result = Bun.spawnSync(["git", ...args], {
-        cwd,
-        env,
-        stdin: "ignore",
-        stdout: "pipe",
-        stderr: "pipe",
-        timeout: limit,
-        windowsHide: true
-      });
-      return {
-        ok: result.exitCode === 0,
-        stdout: result.stdout.toString(),
-        stderr: result.stderr.toString(),
-        timedOut: result.exitedDueToTimeout === true
-      };
-    } catch (error) {
-      throw gitNotFound(error);
-    }
-  };
-}
-function requireGitVersionText(out) {
-  const match = /git version (\d+)\.(\d+)(?:\.(\d+))?/.exec(out);
-  if (!match)
-    return;
-  const version = `${match[1]}.${match[2]}.${match[3] ?? "0"}`;
-  if (Bun.semver.order(version, MIN_GIT_VERSION) < 0) {
-    throw new Error(`git 2.31 or newer is needed; you have git ${version}. Update git.`);
-  }
-}
-function requireGitVersion(git) {
-  requireGitVersionText(git(["--version"]).stdout);
-}
-function mainCheckoutFrom(list, cwd) {
-  if (list.timedOut === true)
-    throw new GitTimedOutError;
-  if (!list.ok)
-    throw new Error(`git worktree list failed in ${cwd}: ${list.stderr.trim()}`);
-  const [firstEntry = ""] = list.stdout.split(`
-
-`);
-  const lines = firstEntry.split(`
-`);
-  if (lines.includes("bare"))
-    return null;
-  const pathLine = lines.find((line) => line.startsWith("worktree "));
-  if (!pathLine)
-    return null;
-  const path = pathLine.slice("worktree ".length);
-  if (!existsSync2(path) || lines.some((line) => line.startsWith("prunable"))) {
-    throw new Error(`The main checkout of the repo at ${cwd} is missing: ${path} was moved or deleted. ` + 'If you moved it, run "git worktree repair" in its new folder.');
-  }
-  return realpathSync(path);
-}
-function findMainCheckout(git, cwd) {
-  return mainCheckoutFrom(git(["worktree", "list", "--porcelain"]), cwd);
-}
-function revParseParts(revParse) {
-  const [top, gitDir, common] = revParse.stdout.trim().split(`
-`);
-  if (!revParse.ok || top?.startsWith("--"))
-    return "not-understood";
-  if (!top || !gitDir || !common)
-    return "outside";
-  return { common, gitDir, top };
-}
-function checkoutRoots(parts) {
-  const root = realpathSync(parts.top);
-  const commonDir = realpathSync(parts.common);
-  return { commonDir, isWorktree: realpathSync(parts.gitDir) !== commonDir, root };
-}
-function locateCheckout(cwd, options = {}) {
-  if (!existsSync2(cwd) || !statSync(cwd).isDirectory()) {
-    throw new Error(`resolveProject: ${cwd} is not a folder`);
-  }
-  const git = gitIn(cwd, gitEnv(options.env ?? process.env), undefined, options.timeFor);
-  const revParse = git([
-    "rev-parse",
-    "--path-format=absolute",
-    "--show-toplevel",
-    "--absolute-git-dir",
-    "--git-common-dir"
-  ]);
-  if (revParse.timedOut === true)
-    throw new GitTimedOutError;
-  const parts = revParseParts(revParse);
-  if (parts === "not-understood") {
-    requireGitVersion(git);
-    if (revParse.ok) {
-      throw new Error("git did not understand rev-parse --path-format: git 2.31 or newer is needed.");
-    }
-    return null;
-  }
-  if (parts === "outside")
-    return null;
-  const roots = checkoutRoots(parts);
-  return {
-    ...roots,
-    mainCheckout: roots.isWorktree ? findMainCheckout(git, cwd) : roots.root
-  };
-}
-function projectFileFor(checkout) {
-  const { root, mainCheckout } = checkout;
-  const own = join3(root, CONFIG_PATH);
-  if (existsSync2(own))
-    return own;
-  if (mainCheckout === null || mainCheckout === root)
-    return null;
-  const main = join3(mainCheckout, CONFIG_PATH);
-  return existsSync2(main) ? main : null;
-}
-function ownHooksOf(checkout) {
-  const file = projectFileFor(checkout);
-  return file === null ? [] : readOwnHooks(file) ?? [];
-}
-
-// src/hooks/ask-log.ts
-import { join as join7 } from "path";
-
-// src/hooks/jsonl-log.ts
-import { appendFileSync as appendFileSync2, mkdirSync as mkdirSync4, readFileSync as readFileSync5, statSync as statSync5 } from "fs";
-import { dirname as dirname2 } from "path";
-
-// src/setup/write.ts
+// src/setup/lock.ts
 import {
   closeSync,
-  existsSync as existsSync3,
-  fsyncSync,
-  lstatSync,
   mkdirSync,
   openSync,
-  readdirSync,
-  readFileSync as readFileSync2,
+  readFileSync,
   readlinkSync,
-  realpathSync as realpathSync2,
-  renameSync,
-  statSync as statSync2,
+  statSync,
   unlinkSync,
-  writeFileSync
+  writeSync
 } from "fs";
-import { basename, dirname, join as join4, resolve } from "path";
+import { hostname } from "os";
+import { join as join3 } from "path";
 
 // src/setup/file-mode.ts
 import { chmodSync, fchmodSync } from "fs";
@@ -390,65 +212,7 @@ function setFileMode(fileOrFd, mode, platform = hostPlatform()) {
   }
 }
 
-// src/setup/write.ts
-function writeTemp(file, content, mode) {
-  const dir = dirname(file);
-  mkdirSync(dir, { recursive: true });
-  const temp = join4(dir, `.${basename(file)}.cc-smart-dev-kit-tmp-${process.pid}-${crypto.randomUUID()}`);
-  try {
-    const fd = openSync(temp, "wx", mode);
-    try {
-      writeFileSync(fd, content);
-      fsyncSync(fd);
-    } finally {
-      closeSync(fd);
-    }
-    setFileMode(temp, mode);
-  } catch (error) {
-    if (existsSync3(temp))
-      unlinkSync(temp);
-    throw error;
-  }
-  return temp;
-}
-function atomicWrite(file, content, mode, beforeRename) {
-  const temp = writeTemp(file, content, mode);
-  try {
-    beforeRename?.();
-    renameSync(temp, file);
-  } catch (error) {
-    if (existsSync3(temp))
-      unlinkSync(temp);
-    throw error;
-  }
-}
-
-// src/update/state.ts
-import {
-  appendFileSync,
-  existsSync as existsSync4,
-  mkdirSync as mkdirSync3,
-  readdirSync as readdirSync2,
-  readFileSync as readFileSync4,
-  rmSync,
-  statSync as statSync4,
-  writeFileSync as writeFileSync2
-} from "fs";
-import { join as join6 } from "path";
-
 // src/setup/lock.ts
-import {
-  closeSync as closeSync2,
-  mkdirSync as mkdirSync2,
-  openSync as openSync2,
-  readFileSync as readFileSync3,
-  readlinkSync as readlinkSync2,
-  statSync as statSync3,
-  unlinkSync as unlinkSync2,
-  writeSync
-} from "fs";
-import { hostname } from "os";
-import { join as join5 } from "path";
 var FALLBACK_STALE_MS = 10 * 60 * 1000;
 var LOCK_FILE = "lock";
 var TAKEOVER_SUFFIX = ".takeover";
@@ -458,7 +222,7 @@ class LockBusyError extends Error {
 }
 function procStartTime(pid) {
   try {
-    const stat = readFileSync3(`/proc/${pid}/stat`, "utf8");
+    const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
     const fields = stat.slice(stat.lastIndexOf(")") + 2).split(" ");
     const start = fields[22 - 3];
     return start && /^\d+$/.test(start) ? start : null;
@@ -494,7 +258,7 @@ function processStartTime(pid, like) {
 }
 function ownPidNamespace() {
   try {
-    return readlinkSync2("/proc/self/ns/pid");
+    return readlinkSync("/proc/self/ns/pid");
   } catch {
     return null;
   }
@@ -529,7 +293,7 @@ function parseLock(text) {
 function readHeld(file) {
   let stat;
   try {
-    stat = statSync3(file);
+    stat = statSync(file);
   } catch (error) {
     if (error.code === "ENOENT")
       return null;
@@ -537,7 +301,7 @@ function readHeld(file) {
   }
   let info;
   try {
-    info = parseLock(readFileSync3(file, "utf8"));
+    info = parseLock(readFileSync(file, "utf8"));
   } catch (error) {
     const code = error.code;
     if (code === "ENOENT")
@@ -578,7 +342,7 @@ function isStale(held, fallbackStaleMs) {
 function tryCreate(file, info, mode) {
   let fd;
   try {
-    fd = openSync2(file, "wx", mode);
+    fd = openSync(file, "wx", mode);
   } catch (error) {
     if (error.code === "EEXIST")
       return false;
@@ -588,7 +352,7 @@ function tryCreate(file, info, mode) {
     setFileMode(fd, mode);
     writeSync(fd, JSON.stringify(info));
   } finally {
-    closeSync2(fd);
+    closeSync(fd);
   }
   return true;
 }
@@ -609,23 +373,23 @@ function takeOverStale(file, judged, fallbackStaleMs, mode) {
     if (other && isStale(other, fallbackStaleMs)) {
       const again = readHeld(claim);
       if (again && sameHeld(again, other))
-        unlinkSync2(claim);
+        unlinkSync(claim);
     }
     return false;
   }
   try {
     const now = readHeld(file);
     if (now && sameHeld(now, judged))
-      unlinkSync2(file);
+      unlinkSync(file);
     return true;
   } finally {
     if (readHeld(claim)?.info?.token === me.token)
-      unlinkSync2(claim);
+      unlinkSync(claim);
   }
 }
 async function withLock(stateDir, fn, options = {}) {
-  mkdirSync2(stateDir, { recursive: true });
-  const file = join5(stateDir, LOCK_FILE);
+  mkdirSync(stateDir, { recursive: true });
+  const file = join3(stateDir, LOCK_FILE);
   const mine = newLockInfo();
   const deadline = Date.now() + (options.waitMs ?? 0);
   const fallbackStaleMs = options.fallbackStaleMs ?? FALLBACK_STALE_MS;
@@ -652,374 +416,61 @@ async function withLock(stateDir, fn, options = {}) {
     return await fn();
   } finally {
     if (readHeld(file)?.info?.token === mine.token)
-      unlinkSync2(file);
+      unlinkSync(file);
   }
 }
 
-// src/update/state.ts
-var CHECK_INTERVAL_MS = 60 * 60 * 1000;
-var LOG_MAX_BYTES = 256 * 1024;
-function updateFiles(stateDir) {
-  return {
-    hold: join6(stateDir, "update-hold"),
-    check: join6(stateDir, "update-check.json"),
-    reported: join6(stateDir, "update-reported"),
-    major: join6(stateDir, "update-major.json"),
-    log: join6(stateDir, "update.log"),
-    lockDir: join6(stateDir, "update"),
-    sessions: join6(stateDir, "sessions")
-  };
-}
-var UNREACHABLE_FAILS_AFTER_HOURS = 24;
-var UNREACHABLE_FAILS_AFTER_MS = UNREACHABLE_FAILS_AFTER_HOURS * 60 * 60 * 1000;
-function isHeld(files) {
-  return existsSync4(files.hold);
-}
-
-// src/hooks/jsonl-log.ts
-function cutBack(file) {
-  let size;
-  try {
-    size = statSync5(file).size;
-  } catch {
-    return;
-  }
-  if (size <= LOG_MAX_BYTES)
-    return;
-  const text = readFileSync5(file, "utf8");
-  const keep = text.slice(text.length - LOG_MAX_BYTES / 2);
-  atomicWrite(file, keep.slice(keep.indexOf(`
-`) + 1), 384);
-}
-function appendJsonLine(file, value) {
-  mkdirSync4(dirname2(file), { recursive: true, mode: 448 });
-  cutBack(file);
-  appendFileSync2(file, `${JSON.stringify(value)}
-`, { mode: 384 });
-}
-
-// src/hooks/ask-log.ts
-var ASK_LOG_FILE = "guard-asks.jsonl";
-var ASK_REASON_MAX = 200;
-function askLogFile(stateDir) {
-  return join7(stateDir, ASK_LOG_FILE);
-}
-function appendAsk(file, ask) {
-  appendJsonLine(file, ask);
-}
-
-// src/hooks/checked-config.ts
-import { createHash } from "crypto";
+// src/setup/write.ts
 import {
-  accessSync,
-  constants,
-  existsSync as existsSync5,
-  mkdirSync as mkdirSync5,
-  readdirSync as readdirSync3,
-  readFileSync as readFileSync6,
-  statSync as statSync6,
-  unlinkSync as unlinkSync3
+  closeSync as closeSync2,
+  existsSync,
+  fsyncSync,
+  lstatSync,
+  mkdirSync as mkdirSync2,
+  openSync as openSync2,
+  readdirSync,
+  readFileSync as readFileSync2,
+  readlinkSync as readlinkSync2,
+  realpathSync,
+  renameSync,
+  statSync as statSync2,
+  unlinkSync as unlinkSync2,
+  writeFileSync
 } from "fs";
-import { dirname as dirname3, join as join8 } from "path";
-
-// src/build-info/index.ts
-var info = {
-  version: "6.7.1",
-  repo: "sellanybiz/cc-smart-dev-kit",
-  dependencies: [
-    {
-      name: "claude-mem",
-      marketplace: "thedotmack",
-      version: ">=15.0.0"
-    },
-    {
-      name: "frontend-design",
-      marketplace: "claude-plugins-official"
-    }
-  ]
-};
-var VERSION = info.version;
-var MARKETPLACE_SOURCE = info.repo;
-var DEPENDENCIES = info.dependencies;
-var MARKETPLACE_ADD_COMMAND = `claude plugin marketplace add ${MARKETPLACE_SOURCE}`;
-var PLUGIN_INSTALL_COMMAND = `claude plugin install ${PLUGIN_ID}`;
-var PLUGIN_UPDATE_COMMAND = `claude plugin update ${PLUGIN_ID}`;
-
-// src/hooks/checked-config.ts
-var PARSER_FINGERPRINT = "cf83d28a9adcc460bb6ed14ca8396360e3e093bc64ef4a44a7d36ab2374eb526";
-var CHECKED_DIR = "checked";
-var CHECKED_CACHE_LIMIT = 64;
-var CHECKED_FILE_MAX_BYTES = 256 * 1024;
-var CHECKED_TEMP_MAX_AGE_MS = 60000;
-var ENTRY_FORMAT = 1;
-var TEMP_NAME = /^\..+\.cc-smart-dev-kit-tmp-/;
-var PARSE = {
-  project: (sibling, text, where) => sibling.checkProjectText(text, where),
-  workflow: (sibling, text, where) => sibling.checkWorkflowText(text, where)
-};
-function reinstallMessage(why) {
-  return `The plugin's config checker is not usable (${why}): run \`${PLUGIN_INSTALL_COMMAND}\` to reinstall the plugin, then try again.`;
-}
-async function loadSibling() {
-  const built = join8(import.meta.dir, "config-check.js");
-  const entry = existsSync5(built) ? built : join8(import.meta.dir, "..", "entries", "config-check.ts");
-  const loaded = await import(entry);
-  for (const name of ["checkProjectText", "checkWorkflowText"]) {
-    if (typeof loaded[name] !== "function") {
-      throw new Error(`${entry} exports no ${name}`);
-    }
-  }
-  return loaded;
-}
-function checkedKey(fingerprint, kind, bytes) {
-  return createHash("sha256").update(`${fingerprint}
-${kind}
-`).update(bytes).digest("hex");
-}
-function readEntry(file, key, kind) {
+import { basename, dirname, join as join4, resolve } from "path";
+function writeTemp(file, content, mode) {
+  const dir = dirname(file);
+  mkdirSync2(dir, { recursive: true });
+  const temp = join4(dir, `.${basename(file)}.cc-smart-dev-kit-tmp-${process.pid}-${crypto.randomUUID()}`);
   try {
-    const entry = JSON.parse(readFileSync6(file, "utf8"));
-    if (entry?.format !== ENTRY_FORMAT || entry.key !== key || entry.kind !== kind)
-      return null;
-    const { value } = entry;
-    const isObject = typeof value === "object" && value !== null && !Array.isArray(value);
-    return isObject ? value : null;
-  } catch {
-    return null;
-  }
-}
-function prune(dir, nowMs) {
-  const entries = [];
-  for (const name of readdirSync3(dir)) {
-    const path = join8(dir, name);
+    const fd = openSync2(temp, "wx", mode);
     try {
-      if (TEMP_NAME.test(name)) {
-        if (nowMs - statSync6(path).mtimeMs > CHECKED_TEMP_MAX_AGE_MS)
-          unlinkSync3(path);
-      } else if (name.endsWith(".json")) {
-        entries.push({ path, mtimeMs: statSync6(path).mtimeMs });
-      }
-    } catch {}
-  }
-  entries.sort((a, b) => a.mtimeMs - b.mtimeMs);
-  for (const old of entries.slice(0, Math.max(0, entries.length - (CHECKED_CACHE_LIMIT - 1)))) {
-    try {
-      unlinkSync3(old.path);
-    } catch {}
-  }
-}
-function writeEntry(dir, key, kind, value) {
-  try {
-    if (!existsSync5(dir)) {
-      mkdirSync5(dir, { recursive: true, mode: 448 });
-      setFileMode(dir, 448);
+      writeFileSync(fd, content);
+      fsyncSync(fd);
+    } finally {
+      closeSync2(fd);
     }
-    prune(dir, Date.now());
-    const entry = { format: ENTRY_FORMAT, key, kind, value };
-    atomicWrite(join8(dir, `${key}.json`), JSON.stringify(entry), 384);
-  } catch {}
-}
-async function loadCheckedFile(file, kind, { paths }) {
-  if (!existsSync5(file))
-    return { ok: true, value: null, fact: "none" };
-  const bytes = readFileSync6(file);
-  const cacheable = bytes.length <= CHECKED_FILE_MAX_BYTES;
-  const dir = join8(paths.stateDir, CHECKED_DIR);
-  const key = checkedKey(PARSER_FINGERPRINT, kind, bytes);
-  if (cacheable) {
-    const hit = readEntry(join8(dir, `${key}.json`), key, kind);
-    if (hit !== null)
-      return { ok: true, value: hit, fact: "cached" };
-  }
-  let sibling;
-  try {
-    sibling = await loadSibling();
+    setFileMode(temp, mode);
   } catch (error) {
-    const why = error instanceof Error ? error.message : String(error);
-    return { ok: false, message: reinstallMessage(why), fact: "broken" };
+    if (existsSync(temp))
+      unlinkSync2(temp);
+    throw error;
   }
-  const answer = PARSE[kind](sibling, bytes.toString("utf8"), file);
-  if (answer.fingerprint !== PARSER_FINGERPRINT) {
-    const why = "it was built from another version of the plugin than this hook";
-    return { ok: false, message: reinstallMessage(why), fact: "broken" };
-  }
-  if (!answer.ok)
-    return { ok: false, message: answer.message, fact: "broken" };
-  if (cacheable)
-    writeEntry(dir, key, kind, answer.value);
-  return { ok: true, value: answer.value, fact: "checked" };
+  return temp;
 }
-async function loadCheckedProject(checkout, options) {
-  const file = projectFileFor(checkout);
-  if (file === null) {
-    return { ok: true, project: { ...checkout, config: null, configFile: null }, fact: "none" };
-  }
-  const checked = await loadCheckedFile(file, "project", options);
-  if (!checked.ok)
-    return checked;
-  return {
-    ok: true,
-    project: { ...checkout, config: checked.value, configFile: file },
-    fact: checked.fact
-  };
-}
-
-// src/hooks/io.ts
-var SILENT = {};
-function parseHookInput(text) {
+function atomicWrite(file, content, mode, beforeRename) {
+  const temp = writeTemp(file, content, mode);
   try {
-    const value = JSON.parse(text);
-    return typeof value === "object" && value !== null && !Array.isArray(value) ? value : null;
-  } catch {
-    return null;
-  }
-}
-function stringField(value) {
-  return typeof value === "string" && value !== "" ? value : null;
-}
-function askReason(result) {
-  if (result.stdout === undefined)
-    return null;
-  try {
-    const value = JSON.parse(result.stdout);
-    const output = value.hookSpecificOutput;
-    if (output?.permissionDecision !== "ask")
-      return null;
-    return typeof output.permissionDecisionReason === "string" ? output.permissionDecisionReason : "";
-  } catch {
-    return null;
-  }
-}
-
-// src/hooks/run.ts
-var HOOK_LOG_ENV = "CC_SMART_DEV_KIT_HOOK_LOG";
-function errorMessage(error) {
-  return error instanceof Error ? error.message : String(error);
-}
-function crashResult(spec, why, input, event, context) {
-  const line = {
-    exitCode: spec.crashExitCode ?? 0,
-    stderr: `cc-smart-dev-kit ${spec.name}: ${why}`
-  };
-  if (spec.onCrash === undefined)
-    return line;
-  try {
-    return spec.onCrash(why, input, event, context);
-  } catch {
-    return line;
-  }
-}
-function recordAsk(spec, input, result, context) {
-  const reason = askReason(result);
-  if (reason === null)
-    return result;
-  try {
-    appendAsk(askLogFile(context.paths.stateDir), {
-      at: context.nowMs,
-      hook: spec.name,
-      session: stringField(input?.session_id) ?? "",
-      tool: stringField(input?.tool_name) ?? "",
-      reason: maskedLine(reason, [], ASK_REASON_MAX, { mark: "..." })
-    });
+    beforeRename?.();
+    renameSync(temp, file);
   } catch (error) {
-    const note = `cc-smart-dev-kit ${spec.name}: the ask could not be recorded (${errorMessage(error)})`;
-    return { ...result, stderr: result.stderr === undefined ? note : `${result.stderr}
-${note}` };
+    if (existsSync(temp))
+      unlinkSync2(temp);
+    throw error;
   }
-  return result;
-}
-async function answer(spec, input, context, observed) {
-  const { env } = context;
-  let event = "";
-  try {
-    if (input === null) {
-      return crashResult(spec, "the hook input is not JSON", null, "", context);
-    }
-    const named = stringField(input.hook_event_name);
-    if (named === null || !spec.events.includes(named))
-      return SILENT;
-    event = named;
-    const cwd = stringField(input.cwd);
-    const outside = spec.outsideGit ?? (() => SILENT);
-    if (cwd === null)
-      return await outside(input, event, "the hook input has no cwd", context);
-    let checkout;
-    try {
-      checkout = locateCheckout(cwd, { env });
-    } catch (error) {
-      return await outside(input, event, errorMessage(error), context);
-    }
-    if (checkout === null)
-      return await outside(input, event, `${cwd} is not in a git checkout`, context);
-    if (spec.alwaysOn !== true && ownHooksOf(checkout).includes(spec.name))
-      return SILENT;
-    const loaded = await loadCheckedProject(checkout, { paths: context.paths });
-    observed.config = loaded.fact;
-    if (!loaded.ok) {
-      return await spec.onConfigProblem(loaded.message, input, event, checkout, context);
-    }
-    return await spec.run({
-      input,
-      event,
-      cwd,
-      project: loaded.project,
-      env,
-      paths: context.paths,
-      nowMs: context.nowMs,
-      ...context.start !== undefined && { start: context.start }
-    });
-  } catch (error) {
-    return crashResult(spec, errorMessage(error), input, event, context);
-  }
-}
-async function handleHook(spec, text, env, nowMs = Date.now(), start, observed = {}) {
-  const context = {
-    env,
-    paths: cliPaths(env),
-    nowMs,
-    ...start !== undefined && { start }
-  };
-  const input = parseHookInput(text);
-  const result = await answer(spec, input, context, observed);
-  return recordAsk(spec, input, result, context);
-}
-function logRun(spec, text, result, env, nowMs, observed) {
-  const file = env[HOOK_LOG_ENV];
-  if (file === undefined || file === "")
-    return;
-  try {
-    const input = parseHookInput(text);
-    const facts = input === null ? {} : spec.logFacts?.(input, { env, paths: cliPaths(env), nowMs }) ?? {};
-    appendFileSync3(file, `${JSON.stringify({
-      hook: spec.name,
-      event: stringField(input?.hook_event_name),
-      cwd: stringField(input?.cwd),
-      exitCode: result.exitCode ?? 0,
-      ...observed.config !== undefined && { config: observed.config },
-      stdout: (result.stdout ?? "").slice(0, 2000),
-      ...Object.keys(facts).length === 0 ? {} : { facts }
-    })}
-`);
-  } catch {}
-}
-async function runHookEntry(spec) {
-  const text = await Bun.stdin.text();
-  const nowMs = Date.now();
-  const observed = {};
-  const result = await handleHook(spec, text, process.env, nowMs, undefined, observed);
-  logRun(spec, text, result, process.env, nowMs, observed);
-  if (result.stdout !== undefined)
-    await Bun.write(Bun.stdout, result.stdout);
-  if (result.stderr !== undefined)
-    await Bun.write(Bun.stderr, `${result.stderr}
-`);
-  process.exit(result.exitCode ?? 0);
 }
 
 // src/workflow/reviews.ts
-import { createHash as createHash2 } from "crypto";
-import { mkdirSync as mkdirSync6, readFileSync as readFileSync7 } from "fs";
-import { dirname as dirname4, join as join9 } from "path";
 var REVIEWS_KEPT = 50;
 var REVIEWS_LOCK_WAIT_MS = 3000;
 var START_KEPT_MS = 24 * 60 * 60 * 1000;
@@ -1028,17 +479,17 @@ function recordsReview(agent, agents) {
   return agents.some((name) => name === agent);
 }
 function repoKey(repo) {
-  return createHash2("sha256").update(repo).digest("hex").slice(0, 16);
+  return createHash("sha256").update(repo).digest("hex").slice(0, 16);
 }
 function reviewsFile(stateDir, repo) {
-  return join9(stateDir, "reviews", `${repoKey(repo)}.json`);
+  return join5(stateDir, "reviews", `${repoKey(repo)}.json`);
 }
 function reviewStartsFile(stateDir, repo) {
-  return join9(stateDir, "reviews", `${repoKey(repo)}.starts.json`);
+  return join5(stateDir, "reviews", `${repoKey(repo)}.starts.json`);
 }
 function readObject(file) {
   try {
-    const parsed = JSON.parse(readFileSync7(file, "utf8"));
+    const parsed = JSON.parse(readFileSync3(file, "utf8"));
     return typeof parsed === "object" && parsed !== null && !Array.isArray(parsed) ? parsed : {};
   } catch {
     return {};
@@ -1064,8 +515,8 @@ function readReviews(file) {
   return record;
 }
 async function underRecordLock(file, write) {
-  const folder = dirname4(file);
-  mkdirSync6(folder, { mode: 448, recursive: true });
+  const folder = dirname2(file);
+  mkdirSync3(folder, { mode: 448, recursive: true });
   return await withLock(folder, write, { waitMs: REVIEWS_LOCK_WAIT_MS });
 }
 async function recordReview(file, sha, by, atMs, branch = null) {
@@ -1137,6 +588,612 @@ async function takeReviewStart(file, agentId) {
 `, 384);
     return { head: start.head, branch: start.branch ?? null };
   });
+}
+
+// src/hooks/git.ts
+var GIT_TIMED_OUT = "timed out";
+var GUARD_GIT_TIMEOUT_MS = 5000;
+function runGit(cwd, args, env, timeoutMs = 15000, own = {}, input) {
+  return spawnGit(cwd, args, env, timeoutMs, own, true, input);
+}
+function spawnGit(cwd, args, env, timeoutMs, own, trim, input) {
+  const bytes = input === undefined ? undefined : new TextEncoder().encode(input);
+  const run = spawnGitBytes(cwd, args, env, timeoutMs, own, bytes);
+  const out = new TextDecoder("utf-8", { ignoreBOM: true }).decode(run.out);
+  return { ...run, out: trim ? out.trim() : out };
+}
+function spawnGitBytes(cwd, args, env, timeoutMs, own, input) {
+  try {
+    const result = Bun.spawnSync(["git", ...args], {
+      cwd,
+      env: { ...gitEnv(env), ...own },
+      stdin: input ?? "ignore",
+      stdout: "pipe",
+      stderr: "pipe",
+      timeout: timeoutMs,
+      windowsHide: true
+    });
+    const err = result.signalCode ? GIT_TIMED_OUT : result.stderr.toString().trim();
+    const code = result.signalCode ? null : result.exitCode;
+    return { ok: result.exitCode === 0, out: result.stdout, err, code };
+  } catch (error) {
+    const err = messageOf(error);
+    return { ok: false, out: new Uint8Array, err, code: null };
+  }
+}
+function commitArgs(rev) {
+  return ["rev-parse", "--verify", "--quiet", `${rev}^{commit}`];
+}
+function commitIn(run) {
+  return run.ok && COMMIT_SHA.test(run.out) ? run.out : null;
+}
+function parseWorktreeList(porcelain) {
+  const worktrees = [];
+  for (const block of porcelain.split(/\r?\n\r?\n/)) {
+    const lines = block.split(/\r?\n/).filter((line) => line !== "");
+    const value = (key) => lines.find((line) => line.startsWith(`${key} `))?.slice(key.length + 1);
+    const flag = (key) => lines.some((line) => line === key || line.startsWith(`${key} `));
+    const path = value("worktree");
+    if (path === undefined)
+      continue;
+    const lockReason = value("locked")?.trim();
+    worktrees.push({
+      path,
+      head: value("HEAD") ?? "",
+      branch: value("branch")?.replace(/^refs\/heads\//, "") ?? null,
+      locked: flag("locked"),
+      ...lockReason === undefined || lockReason === "" ? {} : { lockReason },
+      prunable: flag("prunable"),
+      ...flag("bare") ? { bare: true } : {}
+    });
+  }
+  return worktrees;
+}
+
+// src/project/config-facts.ts
+import { existsSync as existsSync2 } from "fs";
+
+// src/setup/user-json.ts
+import { readFileSync as readFileSync4 } from "fs";
+var BOM = "\uFEFF";
+function withoutBom(text) {
+  return text.startsWith(BOM) ? text.slice(BOM.length) : text;
+}
+function parseUserJson(text) {
+  return JSON.parse(withoutBom(text));
+}
+function readUserJson(file) {
+  return parseUserJson(readFileSync4(file, "utf8"));
+}
+
+// src/project/config-facts.ts
+var CONFIG_PATH = ".claude/cc-smart-dev-kit.json";
+function readOwnHooks(file) {
+  if (!existsSync2(file))
+    return null;
+  try {
+    const raw = readUserJson(file);
+    if (typeof raw !== "object" || raw === null || Array.isArray(raw))
+      return [];
+    const listed = raw.ownHooks;
+    return Array.isArray(listed) ? listed.filter((name) => typeof name === "string") : [];
+  } catch {
+    return [];
+  }
+}
+
+// src/project/locate.ts
+var MIN_GIT_VERSION = "2.31.0";
+var RESOLVE_GIT_TIMEOUT_MS = 5000;
+var GIT_NOT_FOUND = "git was not found, so this project's own values cannot be read. Install git, then try again.";
+function gitNotFound(error) {
+  const why = messageOf(error);
+  return /not found in \$PATH|ENOENT/.test(why) ? new Error(GIT_NOT_FOUND) : error;
+}
+var GIT_TIMED_OUT2 = "git did not answer in time";
+var GIT_TIMED_OUT_FIX = "run `git status` in this folder; if that hangs too, fix git first, then run this again";
+
+class GitTimedOutError extends Error {
+  constructor() {
+    super(`${GIT_TIMED_OUT2}: ${GIT_TIMED_OUT_FIX}`);
+    this.name = "GitTimedOutError";
+  }
+}
+var NO_TIME_LEFT = {
+  ok: false,
+  stdout: "",
+  stderr: "no time left in the hook's budget",
+  timedOut: true
+};
+function callLimit(timeoutMs, timeFor) {
+  return timeFor === undefined ? timeoutMs : timeFor(timeoutMs);
+}
+function gitIn(cwd, env, timeoutMs = RESOLVE_GIT_TIMEOUT_MS, timeFor) {
+  return (args) => {
+    const limit = callLimit(timeoutMs, timeFor);
+    if (limit <= 0)
+      return NO_TIME_LEFT;
+    try {
+      const result = Bun.spawnSync(["git", ...args], {
+        cwd,
+        env,
+        stdin: "ignore",
+        stdout: "pipe",
+        stderr: "pipe",
+        timeout: limit,
+        windowsHide: true
+      });
+      return {
+        ok: result.exitCode === 0,
+        stdout: result.stdout.toString(),
+        stderr: result.stderr.toString(),
+        timedOut: result.exitedDueToTimeout === true
+      };
+    } catch (error) {
+      throw gitNotFound(error);
+    }
+  };
+}
+function requireGitVersionText(out) {
+  const match = /git version (\d+)\.(\d+)(?:\.(\d+))?/.exec(out);
+  if (!match)
+    return;
+  const version = `${match[1]}.${match[2]}.${match[3] ?? "0"}`;
+  if (Bun.semver.order(version, MIN_GIT_VERSION) < 0) {
+    throw new Error(`git 2.31 or newer is needed; you have git ${version}. Update git.`);
+  }
+}
+function requireGitVersion(git) {
+  requireGitVersionText(git(["--version"]).stdout);
+}
+function mainCheckoutFrom(list, cwd) {
+  if (list.timedOut === true)
+    throw new GitTimedOutError;
+  if (!list.ok)
+    throw new Error(`git worktree list failed in ${cwd}: ${list.stderr.trim()}`);
+  const [main] = parseWorktreeList(list.stdout);
+  if (main === undefined || main.bare === true)
+    return null;
+  if (!existsSync3(main.path) || main.prunable) {
+    throw new Error(`The main checkout of the repo at ${cwd} is missing: ${main.path} was moved or deleted. ` + 'If you moved it, run "git worktree repair" in its new folder.');
+  }
+  return realpathSync2(main.path);
+}
+function findMainCheckout(git, cwd) {
+  return mainCheckoutFrom(git(["worktree", "list", "--porcelain"]), cwd);
+}
+function revParseParts(revParse) {
+  const [top, gitDir, common] = revParse.stdout.trim().split(`
+`);
+  if (!revParse.ok || top?.startsWith("--"))
+    return "not-understood";
+  if (!top || !gitDir || !common)
+    return "outside";
+  return { common, gitDir, top };
+}
+function checkoutRoots(parts) {
+  const root = realpathSync2(parts.top);
+  const commonDir = realpathSync2(parts.common);
+  return { commonDir, isWorktree: realpathSync2(parts.gitDir) !== commonDir, root };
+}
+function locateCheckout(cwd, options = {}) {
+  if (!existsSync3(cwd) || !statSync3(cwd).isDirectory()) {
+    throw new Error(`resolveProject: ${cwd} is not a folder`);
+  }
+  const git = gitIn(cwd, gitEnv(options.env ?? process.env), undefined, options.timeFor);
+  const revParse = git([
+    "rev-parse",
+    "--path-format=absolute",
+    "--show-toplevel",
+    "--absolute-git-dir",
+    "--git-common-dir"
+  ]);
+  if (revParse.timedOut === true)
+    throw new GitTimedOutError;
+  const parts = revParseParts(revParse);
+  if (parts === "not-understood") {
+    requireGitVersion(git);
+    if (revParse.ok) {
+      throw new Error("git did not understand rev-parse --path-format: git 2.31 or newer is needed.");
+    }
+    return null;
+  }
+  if (parts === "outside")
+    return null;
+  const roots = checkoutRoots(parts);
+  return {
+    ...roots,
+    mainCheckout: roots.isWorktree ? findMainCheckout(git, cwd) : roots.root
+  };
+}
+function projectFileFor(checkout) {
+  const { root, mainCheckout } = checkout;
+  const own = join6(root, CONFIG_PATH);
+  if (existsSync3(own))
+    return own;
+  if (mainCheckout === null || mainCheckout === root)
+    return null;
+  const main = join6(mainCheckout, CONFIG_PATH);
+  return existsSync3(main) ? main : null;
+}
+function ownHooksOf(checkout) {
+  const file = projectFileFor(checkout);
+  return file === null ? [] : readOwnHooks(file) ?? [];
+}
+
+// src/hooks/ask-log.ts
+import { join as join8 } from "path";
+
+// src/hooks/jsonl-log.ts
+import { appendFileSync as appendFileSync2, mkdirSync as mkdirSync5, readFileSync as readFileSync6, statSync as statSync5 } from "fs";
+import { dirname as dirname3 } from "path";
+
+// src/update/state.ts
+import {
+  appendFileSync,
+  existsSync as existsSync4,
+  mkdirSync as mkdirSync4,
+  readdirSync as readdirSync2,
+  readFileSync as readFileSync5,
+  rmSync,
+  statSync as statSync4,
+  writeFileSync as writeFileSync2
+} from "fs";
+import { join as join7 } from "path";
+var CHECK_INTERVAL_MS = 60 * 60 * 1000;
+var LOG_MAX_BYTES = 256 * 1024;
+function updateFiles(stateDir) {
+  return {
+    hold: join7(stateDir, "update-hold"),
+    check: join7(stateDir, "update-check.json"),
+    reported: join7(stateDir, "update-reported"),
+    major: join7(stateDir, "update-major.json"),
+    log: join7(stateDir, "update.log"),
+    lockDir: join7(stateDir, "update"),
+    sessions: join7(stateDir, "sessions")
+  };
+}
+var UNREACHABLE_FAILS_AFTER_HOURS = 24;
+var UNREACHABLE_FAILS_AFTER_MS = UNREACHABLE_FAILS_AFTER_HOURS * 60 * 60 * 1000;
+function isHeld(files) {
+  return existsSync4(files.hold);
+}
+
+// src/hooks/jsonl-log.ts
+function cutBack(file) {
+  let size;
+  try {
+    size = statSync5(file).size;
+  } catch {
+    return;
+  }
+  if (size <= LOG_MAX_BYTES)
+    return;
+  const text = readFileSync6(file, "utf8");
+  const keep = text.slice(text.length - LOG_MAX_BYTES / 2);
+  atomicWrite(file, keep.slice(keep.indexOf(`
+`) + 1), 384);
+}
+function appendJsonLine(file, value) {
+  mkdirSync5(dirname3(file), { recursive: true, mode: 448 });
+  cutBack(file);
+  appendFileSync2(file, `${JSON.stringify(value)}
+`, { mode: 384 });
+}
+
+// src/hooks/ask-log.ts
+var ASK_LOG_FILE = "guard-asks.jsonl";
+var ASK_REASON_MAX = 200;
+function askLogFile(stateDir) {
+  return join8(stateDir, ASK_LOG_FILE);
+}
+function appendAsk(file, ask) {
+  appendJsonLine(file, ask);
+}
+
+// src/hooks/checked-config.ts
+import { createHash as createHash2 } from "crypto";
+import {
+  accessSync,
+  constants,
+  existsSync as existsSync5,
+  mkdirSync as mkdirSync6,
+  readdirSync as readdirSync3,
+  readFileSync as readFileSync7,
+  statSync as statSync6,
+  unlinkSync as unlinkSync3
+} from "fs";
+import { dirname as dirname4, join as join9 } from "path";
+
+// src/build-info/index.ts
+var info = {
+  version: "6.7.2",
+  repo: "sellanybiz/cc-smart-dev-kit",
+  dependencies: [
+    {
+      name: "claude-mem",
+      marketplace: "thedotmack",
+      version: ">=15.0.0"
+    },
+    {
+      name: "frontend-design",
+      marketplace: "claude-plugins-official"
+    }
+  ]
+};
+var VERSION = info.version;
+var MARKETPLACE_SOURCE = info.repo;
+var DEPENDENCIES = info.dependencies;
+var MARKETPLACE_ADD_COMMAND = `claude plugin marketplace add ${MARKETPLACE_SOURCE}`;
+var PLUGIN_INSTALL_COMMAND = `claude plugin install ${PLUGIN_ID}`;
+var PLUGIN_UPDATE_COMMAND = `claude plugin update ${PLUGIN_ID}`;
+
+// src/hooks/checked-config.ts
+var PARSER_FINGERPRINT = "017ad9b973a1e5beca067c00474a5584289769924b661251e57e92c9f2769237";
+var CHECKED_DIR = "checked";
+var CHECKED_CACHE_LIMIT = 64;
+var CHECKED_FILE_MAX_BYTES = 256 * 1024;
+var CHECKED_TEMP_MAX_AGE_MS = 60000;
+var ENTRY_FORMAT = 1;
+var TEMP_NAME = /^\..+\.cc-smart-dev-kit-tmp-/;
+var PARSE = {
+  project: (sibling, text, where) => sibling.checkProjectText(text, where),
+  workflow: (sibling, text, where) => sibling.checkWorkflowText(text, where)
+};
+function reinstallMessage(why) {
+  return `The plugin's config checker is not usable (${why}): run \`${PLUGIN_INSTALL_COMMAND}\` to reinstall the plugin, then try again.`;
+}
+async function loadSibling() {
+  const built = join9(import.meta.dir, "config-check.js");
+  const entry = existsSync5(built) ? built : join9(import.meta.dir, "..", "entries", "config-check.ts");
+  const loaded = await import(entry);
+  for (const name of ["checkProjectText", "checkWorkflowText"]) {
+    if (typeof loaded[name] !== "function") {
+      throw new Error(`${entry} exports no ${name}`);
+    }
+  }
+  return loaded;
+}
+function checkedKey(fingerprint, kind, bytes) {
+  return createHash2("sha256").update(`${fingerprint}
+${kind}
+`).update(bytes).digest("hex");
+}
+function readEntry(file, key, kind) {
+  try {
+    const entry = JSON.parse(readFileSync7(file, "utf8"));
+    if (entry?.format !== ENTRY_FORMAT || entry.key !== key || entry.kind !== kind)
+      return null;
+    const { value } = entry;
+    const isObject = typeof value === "object" && value !== null && !Array.isArray(value);
+    return isObject ? value : null;
+  } catch {
+    return null;
+  }
+}
+function prune(dir, nowMs) {
+  const entries = [];
+  for (const name of readdirSync3(dir)) {
+    const path = join9(dir, name);
+    try {
+      if (TEMP_NAME.test(name)) {
+        if (nowMs - statSync6(path).mtimeMs > CHECKED_TEMP_MAX_AGE_MS)
+          unlinkSync3(path);
+      } else if (name.endsWith(".json")) {
+        entries.push({ path, mtimeMs: statSync6(path).mtimeMs });
+      }
+    } catch {}
+  }
+  entries.sort((a, b) => a.mtimeMs - b.mtimeMs);
+  for (const old of entries.slice(0, Math.max(0, entries.length - (CHECKED_CACHE_LIMIT - 1)))) {
+    try {
+      unlinkSync3(old.path);
+    } catch {}
+  }
+}
+function writeEntry(dir, key, kind, value) {
+  try {
+    if (!existsSync5(dir)) {
+      mkdirSync6(dir, { recursive: true, mode: 448 });
+      setFileMode(dir, 448);
+    }
+    prune(dir, Date.now());
+    const entry = { format: ENTRY_FORMAT, key, kind, value };
+    atomicWrite(join9(dir, `${key}.json`), JSON.stringify(entry), 384);
+  } catch {}
+}
+async function loadCheckedFile(file, kind, { paths }) {
+  if (!existsSync5(file))
+    return { ok: true, value: null, fact: "none" };
+  const bytes = readFileSync7(file);
+  const cacheable = bytes.length <= CHECKED_FILE_MAX_BYTES;
+  const dir = join9(paths.stateDir, CHECKED_DIR);
+  const key = checkedKey(PARSER_FINGERPRINT, kind, bytes);
+  if (cacheable) {
+    const hit = readEntry(join9(dir, `${key}.json`), key, kind);
+    if (hit !== null)
+      return { ok: true, value: hit, fact: "cached" };
+  }
+  let sibling;
+  try {
+    sibling = await loadSibling();
+  } catch (error) {
+    const why = error instanceof Error ? error.message : String(error);
+    return { ok: false, message: reinstallMessage(why), fact: "broken" };
+  }
+  const answer = PARSE[kind](sibling, bytes.toString("utf8"), file);
+  if (answer.fingerprint !== PARSER_FINGERPRINT) {
+    const why = "it was built from another version of the plugin than this hook";
+    return { ok: false, message: reinstallMessage(why), fact: "broken" };
+  }
+  if (!answer.ok)
+    return { ok: false, message: answer.message, fact: "broken" };
+  if (cacheable)
+    writeEntry(dir, key, kind, answer.value);
+  return { ok: true, value: answer.value, fact: "checked" };
+}
+async function loadCheckedProject(checkout, options) {
+  const file = projectFileFor(checkout);
+  if (file === null) {
+    return { ok: true, project: { ...checkout, config: null, configFile: null }, fact: "none" };
+  }
+  const checked = await loadCheckedFile(file, "project", options);
+  if (!checked.ok)
+    return checked;
+  return {
+    ok: true,
+    project: { ...checkout, config: checked.value, configFile: file },
+    fact: checked.fact
+  };
+}
+
+// src/hooks/io.ts
+var SILENT = {};
+function parseHookInput(text) {
+  try {
+    const value = JSON.parse(text);
+    return typeof value === "object" && value !== null && !Array.isArray(value) ? value : null;
+  } catch {
+    return null;
+  }
+}
+function stringField(value) {
+  return typeof value === "string" && value !== "" ? value : null;
+}
+function askReason(result) {
+  if (result.stdout === undefined)
+    return null;
+  try {
+    const value = JSON.parse(result.stdout);
+    const output = value.hookSpecificOutput;
+    if (output?.permissionDecision !== "ask")
+      return null;
+    return typeof output.permissionDecisionReason === "string" ? output.permissionDecisionReason : "";
+  } catch {
+    return null;
+  }
+}
+
+// src/hooks/run.ts
+var HOOK_LOG_ENV = "CC_SMART_DEV_KIT_HOOK_LOG";
+function crashResult(spec, why, input, event, context) {
+  const line = {
+    exitCode: spec.crashExitCode ?? 0,
+    stderr: `cc-smart-dev-kit ${spec.name}: ${why}`
+  };
+  if (spec.onCrash === undefined)
+    return line;
+  try {
+    return spec.onCrash(why, input, event, context);
+  } catch {
+    return line;
+  }
+}
+function recordAsk(spec, input, result, context) {
+  const reason = askReason(result);
+  if (reason === null)
+    return result;
+  try {
+    appendAsk(askLogFile(context.paths.stateDir), {
+      at: context.nowMs,
+      hook: spec.name,
+      session: stringField(input?.session_id) ?? "",
+      tool: stringField(input?.tool_name) ?? "",
+      reason: maskedLine(reason, [], ASK_REASON_MAX, { mark: "..." })
+    });
+  } catch (error) {
+    const note = `cc-smart-dev-kit ${spec.name}: the ask could not be recorded (${messageOf(error)})`;
+    return { ...result, stderr: result.stderr === undefined ? note : `${result.stderr}
+${note}` };
+  }
+  return result;
+}
+async function answer(spec, input, context, observed) {
+  const { env } = context;
+  let event = "";
+  try {
+    if (input === null) {
+      return crashResult(spec, "the hook input is not JSON", null, "", context);
+    }
+    const named = stringField(input.hook_event_name);
+    if (named === null || !spec.events.includes(named))
+      return SILENT;
+    event = named;
+    const cwd = stringField(input.cwd);
+    const outside = spec.outsideGit ?? (() => SILENT);
+    if (cwd === null)
+      return await outside(input, event, "the hook input has no cwd", context);
+    let checkout;
+    try {
+      checkout = locateCheckout(cwd, { env });
+    } catch (error) {
+      return await outside(input, event, messageOf(error), context);
+    }
+    if (checkout === null)
+      return await outside(input, event, `${cwd} is not in a git checkout`, context);
+    if (spec.alwaysOn !== true && ownHooksOf(checkout).includes(spec.name))
+      return SILENT;
+    const loaded = await loadCheckedProject(checkout, { paths: context.paths });
+    observed.config = loaded.fact;
+    if (!loaded.ok) {
+      return await spec.onConfigProblem(loaded.message, input, event, checkout, context);
+    }
+    return await spec.run({
+      input,
+      event,
+      cwd,
+      project: loaded.project,
+      env,
+      paths: context.paths,
+      nowMs: context.nowMs,
+      ...context.start !== undefined && { start: context.start }
+    });
+  } catch (error) {
+    return crashResult(spec, messageOf(error), input, event, context);
+  }
+}
+async function handleHook(spec, text, env, nowMs = Date.now(), start, observed = {}) {
+  const context = {
+    env,
+    paths: cliPaths(env),
+    nowMs,
+    ...start !== undefined && { start }
+  };
+  const input = parseHookInput(text);
+  const result = await answer(spec, input, context, observed);
+  return recordAsk(spec, input, result, context);
+}
+function logRun(spec, text, result, env, nowMs, observed) {
+  const file = env[HOOK_LOG_ENV];
+  if (file === undefined || file === "")
+    return;
+  try {
+    const input = parseHookInput(text);
+    const facts = input === null ? {} : spec.logFacts?.(input, { env, paths: cliPaths(env), nowMs }) ?? {};
+    appendFileSync3(file, `${JSON.stringify({
+      hook: spec.name,
+      event: stringField(input?.hook_event_name),
+      cwd: stringField(input?.cwd),
+      exitCode: result.exitCode ?? 0,
+      ...observed.config !== undefined && { config: observed.config },
+      stdout: (result.stdout ?? "").slice(0, 2000),
+      ...Object.keys(facts).length === 0 ? {} : { facts }
+    })}
+`);
+  } catch {}
+}
+async function runHookEntry(spec) {
+  const text = await Bun.stdin.text();
+  const nowMs = Date.now();
+  const observed = {};
+  const result = await handleHook(spec, text, process.env, nowMs, undefined, observed);
+  logRun(spec, text, result, process.env, nowMs, observed);
+  if (result.stdout !== undefined)
+    await Bun.write(Bun.stdout, result.stdout);
+  if (result.stderr !== undefined)
+    await Bun.write(Bun.stderr, `${result.stderr}
+`);
+  process.exit(result.exitCode ?? 0);
 }
 
 // node_modules/zod/v4/core/util.js
@@ -7163,47 +7220,6 @@ function workflowValue(workflow, key) {
 
 // src/workflow/resolve.ts
 import { existsSync as existsSync6, readFileSync as readFileSync8 } from "fs";
-
-// src/path-compare.ts
-var IGNORE_CASE = process.platform === "win32";
-
-// src/hooks/git.ts
-var GIT_TIMED_OUT2 = "timed out";
-var GUARD_GIT_TIMEOUT_MS = 5000;
-function runGit(cwd, args, env, timeoutMs = 15000, own = {}, input) {
-  return spawnGit(cwd, args, env, timeoutMs, own, true, input);
-}
-function spawnGit(cwd, args, env, timeoutMs, own, trim, input) {
-  const bytes = input === undefined ? undefined : new TextEncoder().encode(input);
-  const run = spawnGitBytes(cwd, args, env, timeoutMs, own, bytes);
-  const out = new TextDecoder("utf-8", { ignoreBOM: true }).decode(run.out);
-  return { ...run, out: trim ? out.trim() : out };
-}
-function spawnGitBytes(cwd, args, env, timeoutMs, own, input) {
-  try {
-    const result = Bun.spawnSync(["git", ...args], {
-      cwd,
-      env: { ...gitEnv(env), ...own },
-      stdin: input ?? "ignore",
-      stdout: "pipe",
-      stderr: "pipe",
-      timeout: timeoutMs,
-      windowsHide: true
-    });
-    const err = result.signalCode ? GIT_TIMED_OUT2 : result.stderr.toString().trim();
-    const code = result.signalCode ? null : result.exitCode;
-    return { ok: result.exitCode === 0, out: result.stdout, err, code };
-  } catch (error) {
-    const err = error instanceof Error ? error.message : String(error);
-    return { ok: false, out: new Uint8Array, err, code: null };
-  }
-}
-function commitArgs(rev) {
-  return ["rev-parse", "--verify", "--quiet", `${rev}^{commit}`];
-}
-function commitIn(run) {
-  return run.ok && COMMIT_SHA.test(run.out) ? run.out : null;
-}
 
 // src/project/config.ts
 import { posix, win32 } from "path";

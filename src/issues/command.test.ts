@@ -4,10 +4,10 @@
  * Nothing here reaches GitHub.
  */
 import { describe, expect, test } from "bun:test";
-import { chmodSync, writeFileSync } from "node:fs";
-import { delimiter, join } from "node:path";
+import { writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { cliPaths } from "../cli/paths";
-import { fakeGh } from "../testing/fake-gh";
+import { fakeGh, fakeGhEnv } from "../testing/fake-gh";
 import { commitConfig, makeRepo, writePersonalWorkflow } from "../testing/hooks";
 import { cleanGitEnv, git, tempDir } from "../testing/temp";
 import { GH_WRITE_TIMEOUT_MS, runGh } from "../workflow/merge-check";
@@ -111,12 +111,6 @@ describe("issue file: the command", () => {
 
 describe.skipIf(process.platform === "win32")("the real gh executor", () => {
   /** A PATH of one fake `gh` that runs `script`, then the system's own basics. */
-  function withGh(script: string): Record<string, string> {
-    const bin = tempDir("fake-gh-bin");
-    writeFileSync(join(bin, "gh"), `#!/bin/sh\n${script}\n`);
-    chmodSync(join(bin, "gh"), 0o755);
-    return { ...cleanGitEnv(), PATH: `${bin}${delimiter}/usr/bin${delimiter}/bin` };
-  }
   const call = (env: Record<string, string>, timeoutMs = 5_000, input?: string) => ({
     env,
     folder: tempDir("gh-folder"),
@@ -131,13 +125,13 @@ describe.skipIf(process.platform === "win32")("the real gh executor", () => {
   });
 
   test("an exit 0 is ok, with stdout and the stdin it was given", async () => {
-    const env = withGh('cat; echo " $*"');
+    const env = fakeGhEnv('cat; echo " $*"');
     const result = await runGh(["issue", "list"], call(env, 5_000, "hello"));
     expect(result).toMatchObject({ code: 0, kind: "ok", out: "hello issue list\n" });
   });
 
   test("logged out: a failed exit, with gh's own words", async () => {
-    const env = withGh(
+    const env = fakeGhEnv(
       'echo "To get started with GitHub CLI, please run:  gh auth login" >&2; exit 4',
     );
     const result = await runGh(["auth", "status"], call(env));
@@ -146,13 +140,13 @@ describe.skipIf(process.platform === "win32")("the real gh executor", () => {
   });
 
   test("slow: the time runs out", async () => {
-    const env = withGh("exec sleep 30");
+    const env = fakeGhEnv("exec sleep 30");
     const result = await runGh(["issue", "create"], call(env, 300));
     expect(result.kind).toBe("timeout");
   });
 
   test("review: a folder that is not there is a failure, not a missing gh", async () => {
-    const env = withGh("echo hi");
+    const env = fakeGhEnv("echo hi");
     const result = await runGh(["--version"], {
       env,
       folder: "/nonexistent-folder-gi1",
@@ -162,7 +156,7 @@ describe.skipIf(process.platform === "win32")("the real gh executor", () => {
   });
 
   test("review: gh killed by another signal is a failure, not a timeout", async () => {
-    const env = withGh("kill -9 $$");
+    const env = fakeGhEnv("kill -9 $$");
     const result = await runGh(["--version"], call(env));
     expect(result.kind).toBe("failed");
     expect(result.code).toBeNull();

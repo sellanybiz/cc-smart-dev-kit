@@ -36,6 +36,7 @@
  */
 import { appendFileSync } from "node:fs";
 import { type CliPaths, cliPaths } from "../cli/paths";
+import { messageOf } from "../error-message";
 import { maskedLine } from "../gateway/plain-text";
 import { type Checkout, locateCheckout, ownHooksOf } from "../project/locate";
 import type { Project } from "../project/resolve";
@@ -151,10 +152,6 @@ export interface HookSpec {
   crashExitCode?: number;
 }
 
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}
-
 /**
  * The answer when the hook's own code throws. A hook with `onCrash` answers through it (a
  * guard asks about the call in its own domain); a hook without it gets one line on stderr
@@ -205,7 +202,7 @@ function recordAsk(
       reason: maskedLine(reason, [], ASK_REASON_MAX, { mark: "..." }),
     });
   } catch (error) {
-    const note = `cc-smart-dev-kit ${spec.name}: the ask could not be recorded (${errorMessage(error)})`;
+    const note = `cc-smart-dev-kit ${spec.name}: the ask could not be recorded (${messageOf(error)})`;
     return { ...result, stderr: result.stderr === undefined ? note : `${result.stderr}\n${note}` };
   }
   return result;
@@ -245,7 +242,7 @@ async function answer(
     try {
       checkout = locateCheckout(cwd, { env });
     } catch (error) {
-      return await outside(input, event, errorMessage(error), context);
+      return await outside(input, event, messageOf(error), context);
     }
     if (checkout === null)
       return await outside(input, event, `${cwd} is not in a git checkout`, context);
@@ -270,7 +267,7 @@ async function answer(
       ...(context.start !== undefined && { start: context.start }),
     });
   } catch (error) {
-    return crashResult(spec, errorMessage(error), input, event, context);
+    return crashResult(spec, messageOf(error), input, event, context);
   }
 }
 

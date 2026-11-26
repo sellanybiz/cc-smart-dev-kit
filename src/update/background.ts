@@ -20,6 +20,7 @@
 import { COMMAND, PLUGIN, PLUGIN_ID } from "../build-info";
 import { isOlder } from "../build-info/semver";
 import { type CliPaths, tildify } from "../cli/paths";
+import { messageOf } from "../error-message";
 import { isAttended } from "../hooks/attended";
 import { detachedArgv } from "../hooks/detached";
 import { refreshGitHooksFolder } from "../jobs/hook-folder";
@@ -70,10 +71,6 @@ import {
 } from "./state";
 
 type Env = Record<string, string | undefined>;
-
-function messageOf(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}
 
 /** The detail of a check skipped because Claude Code's switch for updates is set. */
 export function optOutDetail(name: string): string {

@@ -838,6 +838,15 @@ describe("Claude Code's own worktrees, and the retired engine", () => {
     expect(await check(repo)).toEqual([]);
   });
 
+  test("baseRef head in a settings file saved with a byte order mark (Windows Notepad): nothing", async () => {
+    const repo = makeRepo();
+    writeClaudeFile(repo, "cc-smart-dev-kit.json", { worktrees: { base: "dev" } });
+    const settings = writeClaudeFile(repo, "settings.json", { worktree: { baseRef: "head" } });
+    writeFileSync(settings, `\uFEFF${readFileSync(settings, "utf8")}`);
+    ignoreWorktrees(repo);
+    expect(await check(repo)).toEqual([]);
+  });
+
   test("the default branch as the base needs no baseRef line", async () => {
     const repo = makeRepo();
     writeClaudeFile(repo, "cc-smart-dev-kit.json", { worktrees: { base: "main" } });

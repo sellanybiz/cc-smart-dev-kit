@@ -122,6 +122,29 @@ describe("parseWorktreeList", () => {
     expect(plain?.locked).toBe(false);
     expect(plain?.lockReason).toBeUndefined();
   });
+
+  test("a bare repo's own entry says so, and a listing with CRLF line ends reads the same", () => {
+    const porcelain = [
+      "worktree /work/app.git",
+      "bare",
+      "",
+      "worktree /work/app-wt",
+      "HEAD 1111111111111111111111111111111111111111",
+      "branch refs/heads/feat/one",
+      "prunable gitdir file points to non-existent location",
+      "",
+    ].join("\r\n");
+    expect(parseWorktreeList(porcelain)).toEqual([
+      { bare: true, branch: null, head: "", locked: false, path: "/work/app.git", prunable: false },
+      {
+        branch: "feat/one",
+        head: "1111111111111111111111111111111111111111",
+        locked: false,
+        path: "/work/app-wt",
+        prunable: true,
+      },
+    ]);
+  });
 });
 
 describe("worktreeAdminDir", () => {
