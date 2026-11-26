@@ -945,6 +945,72 @@ describe("D17: what is listed, not counted, and what is never covered", () => {
     SLOW,
   );
 
+  for (const how of ["info/grafts", "GIT_GRAFT_FILE"] as const) {
+    test(
+      `security: a graft (${how}) cannot move the reviewed commit's merge base to raise its allowance`,
+      async () => {
+        const w = world();
+        const root = git(w.repo, "rev-parse", "HEAD").trim();
+        toBase(w.repo, { "big.txt": numbered(5000, "big") }, "main");
+        const R = reviewed(w.repo);
+        commit(w.repo, { "src/c.txt": numbered(500, "c") }, "big fix");
+        // R grafted onto the first commit: 5,000 base lines would count as reviewed.
+        let env = w.env;
+        if (how === "info/grafts") {
+          writeFileSync(join(w.repo, ".git", "info", "grafts"), `${R} ${root}\n`);
+        } else {
+          const file = join(tempDir("graft"), "grafts");
+          writeFileSync(file, `${R} ${root}\n`);
+          env = { ...w.env, GIT_GRAFT_FILE: file };
+        }
+        expect(await cover(w, [record(R)], {}, LIMITS, env)).toMatchObject({
+          covered: false,
+          review: R,
+          delta: count(500, 1),
+          reviewed: REVIEWED,
+        });
+      },
+      SLOW,
+    );
+  }
+
+  for (const how of ["the shallow file", "GIT_SHALLOW_FILE"] as const) {
+    test(
+      `security: ${how} cannot cut a path to the merge base to raise the allowance`,
+      async () => {
+        const w = world();
+        const root = git(w.repo, "rev-parse", "HEAD").trim();
+        toBase(w.repo, { "big.txt": numbered(5000, "big") }, "main");
+        // R merges a commit on the base (Y) with one off the first commit (Z).
+        git(w.repo, "checkout", "-q", "-b", "feat");
+        const Y = commit(w.repo, { "src/a.txt": numbered(60, "a") }, "y");
+        git(w.repo, "checkout", "-q", "-b", "side", root);
+        commit(w.repo, { "src/b.txt": numbered(40, "b") }, "z");
+        git(w.repo, "checkout", "-q", "feat");
+        git(w.repo, "merge", "-q", "--no-edit", "side");
+        const R = head(w.repo);
+        commit(w.repo, { "src/c.txt": numbered(500, "c") }, "big fix");
+        // Y marked shallow: only the first commit is left in common, and 5,000 base lines
+        // would count as reviewed.
+        let env = w.env;
+        if (how === "the shallow file") {
+          writeFileSync(join(w.repo, ".git", "shallow"), `${Y}\n`);
+        } else {
+          const file = join(tempDir("shallow"), "shallow");
+          writeFileSync(file, `${Y}\n`);
+          env = { ...w.env, GIT_SHALLOW_FILE: file };
+        }
+        expect(await cover(w, [record(R)], {}, LIMITS, env)).toMatchObject({
+          covered: false,
+          review: R,
+          delta: count(500, 1),
+          reviewed: REVIEWED,
+        });
+      },
+      SLOW,
+    );
+  }
+
   test(
     "D17: the base's own binary mark counts: a text file it marks binary is never covered",
     async () => {
