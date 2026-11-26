@@ -80,10 +80,10 @@ const TREE_LEVELS = CONFIG_PATH.split("/").length;
 /**
  * The local git calls one run makes at most, each held to `QUICK_GIT_TIMEOUT_MS`, in the order it
  * makes them: the base's commit, the committed file's three reads (`readCommittedFile`), the
- * blob, a listing and a `mktree` per tree level, `commit.gpgSign`, and the local branch list once
- * per name pick (twice, when a name is taken once).
+ * blob, a listing and a `mktree` per tree level, `commit.gpgSign`, the push URL, and the local
+ * branch list once per name pick (twice, when a name is taken once).
  */
-const QUICK_GIT_CALLS = 1 + 3 + 1 + 2 * TREE_LEVELS + 1 + 2;
+const QUICK_GIT_CALLS = 1 + 3 + 1 + 2 * TREE_LEVELS + 1 + 1 + 2;
 
 /**
  * The longest a run can take, from its own step limits, in the order the run meets them: finding
@@ -204,15 +204,16 @@ function dayStamp(now: number): string {
 }
 
 /**
- * The branches of `origin` whose name starts with `prefix`, in **one** network call: a
- * teammate's proposal of the same setting the same day is skipped before the push. A call that
- * cannot answer (no network) counts as none — the push's lease still refuses a taken name — and
- * the run keeps its one bound on the network (`FETCH_TIMEOUT_MS`).
+ * The branches at `pushUrl` (where the push goes, a separate `pushurl` included) whose name
+ * starts with `prefix`, in **one** network call: a teammate's proposal of the same setting the
+ * same day is skipped before the push. A call that cannot answer (no network) counts as none —
+ * the push's lease still refuses a taken name — and the run keeps its one bound on the network
+ * (`FETCH_TIMEOUT_MS`).
  */
-function remoteBranches(repo: string, prefix: string, env: Env): Set<string> {
+function remoteBranches(repo: string, pushUrl: string, prefix: string, env: Env): Set<string> {
   const listed = runGit(
     repo,
-    ["ls-remote", "--heads", "origin", `${prefix}*`],
+    ["ls-remote", "--heads", pushUrl, `${prefix}*`],
     env,
     FETCH_TIMEOUT_MS,
   );
@@ -242,20 +243,21 @@ function localBranches(repo: string, prefix: string, env: Env): string[] {
 /**
  * The first free branch name from `wanted` on: the same day's second change is `-2`, then `-3`.
  * A name is taken when origin or this repository has it, each asked once, or when it is in
- * `refused` (a name the push was refused under, which the listing may not show: it reads the
- * fetch side, and a listing that cannot answer shows none). Null when all `NAME_TRIES` are taken.
+ * `refused` (a name the push was refused under, which the listing may not show: a listing that
+ * cannot answer shows none). Null when all `NAME_TRIES` are taken.
  * The `worktree-` prefix stays though no worktree is made: proposals pushed before the plumbing
  * commit carry it, so one prefix finds every proposal of a day and keeps the count going across
  * both.
  */
 function freeBranch(
   repo: string,
+  pushUrl: string,
   wanted: string,
   env: Env,
   refused: ReadonlySet<string> = new Set(),
 ): string | null {
   const first = worktreeBranch(wanted);
-  const taken = remoteBranches(repo, first, env);
+  const taken = remoteBranches(repo, pushUrl, first, env);
   for (const name of [...localBranches(repo, first, env), ...refused]) taken.add(name);
   if (!taken.has(first)) return first;
   for (let count = 2; count <= NAME_TRIES; count += 1) {
@@ -717,13 +719,24 @@ export async function proposeWorkflow(
   // 7. The push to a new branch, then the pull request.
   const wanted = `workflow-${settingSlug(key)}-${dayStamp(now())}`;
   const allTaken = `all ${NAME_TRIES} branch names for ${key} today (${worktreeBranch(wanted)} to ${worktreeBranch(`${wanted}-${NAME_TRIES}`)}) are taken, here or on origin: delete the proposal branches you no longer need, then run it again. Nothing was pushed.`;
-  let branch = freeBranch(repo, wanted, context.env);
+  const pushUrl = runGit(
+    repo,
+    ["remote", "get-url", "--push", "origin"],
+    context.env,
+    QUICK_GIT_TIMEOUT_MS,
+  );
+  if (!pushUrl.ok) {
+    return fail(
+      `git remote get-url --push origin failed: ${lastLine(pushUrl.err)}. Check the origin remote (\`git remote -v\`), then try again. Nothing was pushed.`,
+    );
+  }
+  let branch = freeBranch(repo, pushUrl.out, wanted, context.env);
   if (branch === null) return fail(allTaken);
   let pushed = pushBranch(repo, sha, branch, context.env);
   if (!pushed.ok && pushed.taken) {
     // A name another proposal pushed between the check and the push: one more free name, once.
     const refused = branch;
-    branch = freeBranch(repo, wanted, context.env, new Set([refused]));
+    branch = freeBranch(repo, pushUrl.out, wanted, context.env, new Set([refused]));
     if (branch === null) return fail(allTaken);
     pushed = pushBranch(repo, sha, branch, context.env);
     if (!pushed.ok && pushed.taken) {
