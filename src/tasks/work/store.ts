@@ -658,6 +658,19 @@ export function insertNote(
   now: number,
   reason: string | null = null,
 ) {
+  const note = saveNote(db, id, text, who, now, reason);
+  db.sqlite.query("UPDATE tasks SET updated_at=? WHERE id=?").run(now, id);
+  return note;
+}
+/** The note row and its history entry, leaving the task's `updated_at` where it was. */
+function saveNote(
+  db: WorkDb,
+  id: string,
+  text: string,
+  who: Who,
+  now: number,
+  reason: string | null,
+) {
   const task = taskById(db, id);
   if (!text.trim() || text.length > NOTE_LIMIT)
     throw new Error(`note must be 1–${NOTE_LIMIT} characters`);
@@ -666,7 +679,6 @@ export function insertNote(
       "INSERT INTO task_notes(task_id,text,session_id,at) VALUES (?,?,?,?) RETURNING id",
     )
     .get(id, text, who.sessionId, now);
-  db.sqlite.query("UPDATE tasks SET updated_at=? WHERE id=?").run(now, id);
   const preview = text.length > NOTE_PREVIEW ? `${text.slice(0, NOTE_PREVIEW)}…` : text;
   recordEvent(db, task, "noted", { note: [null, preview] }, who, now, reason);
   return {
@@ -690,7 +702,13 @@ export interface NoteOnce {
   text: string;
 }
 
-/** Saves each note on each of its tasks that holds none with its head yet, in one transaction. Answers how many it saved. */
+/**
+ * Saves each note on each of its tasks that holds none with its head yet, in one transaction.
+ * Answers how many it saved. The tasks' `updated_at` stays: a note may land in another lead's
+ * plan, and that lead's release, its launch claim (`swapPlanAgent`) and a hand-out's grace all
+ * key on `updated_at`, so moving it would refuse or delay them for a write that changed nothing
+ * they judge.
+ */
 export function addNotesOnce(
   db: WorkDb,
   notes: readonly NoteOnce[],
@@ -702,7 +720,7 @@ export function addNotesOnce(
     for (const note of notes)
       for (const id of note.taskIds) {
         if (notesOf(db, id).some((one) => one.text.startsWith(note.head))) continue;
-        insertNote(db, id, note.text, who, now);
+        saveNote(db, id, note.text, who, now, null);
         saved += 1;
       }
     return saved;

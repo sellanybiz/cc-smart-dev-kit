@@ -7,10 +7,18 @@ import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { COMMAND } from "../build-info/names";
 import { createOut } from "../cli/ui/out";
-import { planFilesCheck } from "../tasks/files-check";
+import { planFilesCheck, warnOverlaps } from "../tasks/files-check";
 import { openWorkDb, workDbFile } from "../tasks/work/db";
 import { allTasks, eventsOf, notesOf, type StackPair, taskById } from "../tasks/work/queries";
-import { createTask, releasePlan, reservePlan, takeTasks, updateTask } from "../tasks/work/store";
+import {
+  createTask,
+  type PlanOverlap,
+  releasePlan,
+  reservePlan,
+  swapPlanAgent,
+  takeTasks,
+  updateTask,
+} from "../tasks/work/store";
 import type { ClaimProcess, Result, Who, WorkTask } from "../tasks/work/types";
 import { commitConfig, makeClone } from "../testing/hooks";
 import { cleanGitEnv, git, tempDir } from "../testing/temp";
@@ -366,6 +374,62 @@ test("a closed plan with no branch stays held, with its fix", () => {
   const line = w.line("first");
   expect(line.state).toBe("merging");
   expect(line.fix).toContain("task_update #1 with branch");
+});
+
+test("an Overlap: note written into another lead's reserved plans moves nothing its lead keys on", () => {
+  const w = build();
+  const claimed = w.plan("claimed", ["src/a/"]);
+  const released = w.plan("released", ["src/g/"]);
+  const unstarted = w.plan("unstarted", ["src/d/"]);
+  w.reserve("claimed");
+  w.reserve("released");
+  w.reserve("unstarted");
+  // What the lead read before the note: its claim and its release compare against these rows.
+  const [claimedRead, releasedRead] = [claimed, released].map((plan) => taskById(w.db, plan.id));
+  // Another lead reserves a plan that overlaps all three, inside the hand-outs' grace.
+  w.plan("theirs", ["src/a/x.ts", "src/g/y.ts", "src/d/z.ts"], { who: OTHER });
+  const found: PlanOverlap[] = [];
+  const noteAt = 10 + HANDOUT_GRACE_MS - 100;
+  ok(
+    reservePlan(w.db, {
+      project: "p",
+      plan: "theirs",
+      who: OTHER,
+      holder: "child",
+      ignore: [],
+      caseFold: false,
+      found,
+      now: noteAt,
+    }),
+  );
+  expect(warnOverlaps(w.db, found, w.base.check, OTHER, noteAt)).toHaveLength(3);
+  for (const plan of [claimed, released, unstarted]) expect(notesOf(w.db, plan.id)).toHaveLength(1);
+  // The lead's launch claim and its release, each judged on its earlier reading, still pass.
+  ok(
+    swapPlanAgent(w.db, {
+      project: "p",
+      plan: "claimed",
+      who: LEAD,
+      from: null,
+      fromUpdatedAt: claimedRead?.updatedAt ?? -1,
+      to: "pending:1",
+      now: noteAt + 1,
+      reason: "child launching",
+    }),
+  );
+  ok(
+    releasePlan(w.db, {
+      project: "p",
+      plan: "released",
+      who: LEAD,
+      now: noteAt + 1,
+      handoutId: releasedRead?.lead?.handoutId ?? "",
+      updatedAt: releasedRead?.updatedAt ?? -1,
+    }),
+  );
+  // The unstarted hand-out's grace still runs from its reservation, not from the note.
+  const late = judgePlans({ ...w.base, now: () => 10 + HANDOUT_GRACE_MS + 1 }).lines;
+  expect(late.find((one) => one.plan === "unstarted")).toMatchObject({ state: "released" });
 });
 
 test("a hand-out whose child never started: relaunch with a worktree, release without one, a grace first", () => {
