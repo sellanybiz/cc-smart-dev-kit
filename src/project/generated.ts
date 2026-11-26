@@ -34,7 +34,10 @@ const MARKED_VALUES: ReadonlySet<string> = new Set(["set", "true"]);
 /** How many paths one `git check-attr` call names: well inside every system's argument limit. */
 const PATHS_PER_CALL = 200;
 
-/** A sha-256 commit id: the repository's objects are sha-256, so the throwaway folder's must be. */
+/**
+ * A commit id of 64 hex digits: only a repository that uses sha-256 has one. Its throwaway folder
+ * must say so; git's default, sha-1 (40 digits), needs no config.
+ */
 const SHA256_ID = /^[0-9a-f]{64}$/;
 
 /**
