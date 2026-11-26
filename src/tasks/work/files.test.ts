@@ -642,7 +642,7 @@ test("a generated file whose name a propose line would split is named, and no pr
     said(lead.call("update", { task: "#1", status: "in_progress" }));
     const [line] = warned(second.call("update", { task: "#2", status: "in_progress" }));
     expect(line).toEndWith(
-      "origin/main marks db/a,b.gen.ts, db/types.gen.ts generated, but a propose line splits its value at commas and trims each entry, so it cannot carry db/a,b.gen.ts: list them in plans.mergeFiles by hand.",
+      "origin/main marks db/a,b.gen.ts, db/types.gen.ts generated, but the propose value cannot carry db/a,b.gen.ts as it is: list them in plans.mergeFiles by hand.",
     );
     expect(line).not.toContain("workflow propose");
   } finally {
