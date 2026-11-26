@@ -498,7 +498,7 @@ import { dirname as dirname3, join as join6 } from "path";
 
 // src/build-info/index.ts
 var info = {
-  version: "6.7.0",
+  version: "6.7.1",
   repo: "sellanybiz/cc-smart-dev-kit",
   dependencies: [
     {
@@ -520,7 +520,7 @@ var PLUGIN_INSTALL_COMMAND = `claude plugin install ${PLUGIN_ID}`;
 var PLUGIN_UPDATE_COMMAND = `claude plugin update ${PLUGIN_ID}`;
 
 // src/hooks/checked-config.ts
-var PARSER_FINGERPRINT = "e8f36a50af9582ba2986fcdc57a830efb02c05b6c3ee3fb6e5eb73c29a6778d5";
+var PARSER_FINGERPRINT = "f9ca83fa6e76773cdec7aa46583dabc540ca8030b04915c0c72d3979ae4003ae";
 var CHECKED_DIR = "checked";
 var CHECKED_CACHE_LIMIT = 64;
 var CHECKED_FILE_MAX_BYTES = 256 * 1024;
@@ -8590,6 +8590,19 @@ function repoKey(repo) {
   return createHash2("sha256").update(repo).digest("hex").slice(0, 16);
 }
 
+// src/path-compare.ts
+import { dirname as dirname4, resolve as resolve2 } from "path";
+var IGNORE_CASE = process.platform === "win32";
+function isInside(path, folder, ignoreCase = IGNORE_CASE) {
+  const child = pathForm(path, ignoreCase);
+  const parent = pathForm(folder, ignoreCase);
+  return child === parent || child.startsWith(`${parent}/`);
+}
+function pathForm(path, ignoreCase = IGNORE_CASE) {
+  const forward = resolve2(path.replace(/\\/g, "/")).replace(/\\/g, "/").replace(/\/+$/, "");
+  return ignoreCase ? forward.toLowerCase() : forward;
+}
+
 // src/tasks/words.ts
 var TASK_TOOL = {
   create: "task_create",
@@ -8612,15 +8625,20 @@ var PLAN_FILES_WORDS = `Plan task only: the repo-relative paths the plan changes
 
 // src/tasks/deploy/files.ts
 import { existsSync as existsSync7, mkdirSync as mkdirSync4, readdirSync as readdirSync3, readFileSync as readFileSync7, rmSync, writeFileSync as writeFileSync2 } from "fs";
-import { basename as basename2, dirname as dirname4, isAbsolute, join as join8, relative, resolve as resolve2, sep as sep2 } from "path";
+import { basename as basename2, dirname as dirname5, isAbsolute, join as join8, resolve as resolve3 } from "path";
 var DEFAULT_TASKS_DIR = ".claude/tasks";
+var OUTSIDE_CHECKOUT = "Task folder must be inside the checkout";
+function taskFolderIn(checkoutRoot, dir) {
+  const target = resolve3(checkoutRoot, dir);
+  if (!isInside(target, checkoutRoot))
+    throw new Error(OUTSIDE_CHECKOUT);
+  return target;
+}
 function deployTasksDir(checkoutRoot, settings) {
   const dir = settings.dir ?? DEFAULT_TASKS_DIR;
-  const target = resolve2(checkoutRoot, dir);
-  const rel = relative(checkoutRoot, target);
-  if (isAbsolute(dir) || rel === ".." || rel.startsWith(`..${sep2}`))
-    throw new Error("Task folder must be inside the checkout");
-  return target;
+  if (isAbsolute(dir))
+    throw new Error(OUTSIDE_CHECKOUT);
+  return taskFolderIn(checkoutRoot, dir);
 }
 function isTaskFile(name) {
   return !name.startsWith(".") && name !== "README.md" && name.endsWith(".md");
@@ -8630,7 +8648,7 @@ function envFolder(dir, env) {
   return join8(dir, env);
 }
 function isArchived(file) {
-  return basename2(dirname4(file)) === ARCHIVE;
+  return basename2(dirname5(file)) === ARCHIVE;
 }
 function archiveFolder(dir, env) {
   return join8(dir, env, ARCHIVE);
@@ -8882,10 +8900,6 @@ function liveSessions(claudeConfigDir, facts = {}) {
 // src/worktrees/machine-facts.ts
 import { readdirSync as readdirSync5, readFileSync as readFileSync10, readlinkSync as readlinkSync2 } from "fs";
 import { platform } from "os";
-
-// src/path-compare.ts
-var IGNORE_CASE = process.platform === "win32";
-// src/worktrees/machine-facts.ts
 var PROGRAMS_TIMEOUT_MS = 15000;
 var PS_PROGRAMS_ARGV = ["ps", "-ww", "-axo", "pid=,ppid=,args="];
 function spawnPrograms(argv) {
@@ -9104,7 +9118,7 @@ import { existsSync as existsSync10 } from "fs";
 // src/tasks/work/db.ts
 import { Database } from "bun:sqlite";
 import { chmodSync as chmodSync2, existsSync as existsSync9, mkdirSync as mkdirSync5, renameSync as renameSync2, rmSync as rmSync2, writeFileSync as writeFileSync3 } from "fs";
-import { dirname as dirname5, join as join10 } from "path";
+import { dirname as dirname6, join as join10 } from "path";
 
 // src/tasks/work/graph.ts
 function isOpen(task) {
@@ -9404,7 +9418,7 @@ function repairTaskLayers(sqlite, file) {
           } catch (cleanupError) {
             cleanup = ` Temporary backup cleanup also failed: ${String(cleanupError)}.`;
           }
-          throw new BackupFailure(`task lift needs a backup: ${error instanceof Error ? error.message : String(error)}. Fix: free disk space and check folder rights for ${dirname5(file)}. The next task call tries again.${cleanup}`);
+          throw new BackupFailure(`task lift needs a backup: ${error instanceof Error ? error.message : String(error)}. Fix: free disk space and check folder rights for ${dirname6(file)}. The next task call tries again.${cleanup}`);
         }
       }
       backed = true;
@@ -9459,14 +9473,14 @@ function openWorkDb(file, options) {
   if (hook && fresh)
     throw new Error("task store does not exist");
   if (!hook)
-    mkdirSync5(dirname5(file), { recursive: true, mode: 448 });
+    mkdirSync5(dirname6(file), { recursive: true, mode: 448 });
   const sqlite = new Database(file, { create: !hook, readwrite: true });
   let writeRefusal;
   try {
     sqlite.run(`PRAGMA busy_timeout = ${hook ? HOOK_TIMEOUT_MS : WRITE_TIMEOUT_MS}`);
     sqlite.run("PRAGMA foreign_keys = ON");
     if (!hook) {
-      chmodSync2(dirname5(file), 448);
+      chmodSync2(dirname6(file), 448);
       chmodSync2(file, 384);
       if (fresh)
         sqlite.run("PRAGMA journal_mode = WAL");

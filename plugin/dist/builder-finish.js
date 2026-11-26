@@ -481,7 +481,7 @@ import { dirname as dirname3, join as join6 } from "path";
 
 // src/build-info/index.ts
 var info = {
-  version: "6.7.0",
+  version: "6.7.1",
   repo: "sellanybiz/cc-smart-dev-kit",
   dependencies: [
     {
@@ -503,7 +503,7 @@ var PLUGIN_INSTALL_COMMAND = `claude plugin install ${PLUGIN_ID}`;
 var PLUGIN_UPDATE_COMMAND = `claude plugin update ${PLUGIN_ID}`;
 
 // src/hooks/checked-config.ts
-var PARSER_FINGERPRINT = "e8f36a50af9582ba2986fcdc57a830efb02c05b6c3ee3fb6e5eb73c29a6778d5";
+var PARSER_FINGERPRINT = "f9ca83fa6e76773cdec7aa46583dabc540ca8030b04915c0c72d3979ae4003ae";
 var CHECKED_DIR = "checked";
 var CHECKED_CACHE_LIMIT = 64;
 var CHECKED_FILE_MAX_BYTES = 256 * 1024;
@@ -8354,6 +8354,9 @@ function repoKey(repo) {
   return createHash2("sha256").update(repo).digest("hex").slice(0, 16);
 }
 
+// src/path-compare.ts
+var IGNORE_CASE = process.platform === "win32";
+
 // src/mcp/task-server-name.ts
 var TASKS_SERVER_NAME = `${COMMAND}-tasks`;
 
@@ -8777,9 +8780,6 @@ function openWorkDb(file, options) {
     throw error;
   }
 }
-
-// src/path-compare.ts
-var IGNORE_CASE = process.platform === "win32";
 // src/worktrees/machine-facts.ts
 var OUR_TOOLS = new Set(["git", "docker", "ps", "powershell", "pgrep"]);
 var SHELL_NAMES = new Set(["sh", "bash", "zsh", "dash", "fish", "ksh", "pwsh", "powershell"]);
