@@ -1,6 +1,7 @@
 /**
  * Reading a JSON file a person may have edited: `~/.claude/settings.json`, Claude Code's own
- * files beside it, a project's `.mcp.json`. The one home of that read, so every reader agrees.
+ * files beside it, a project's `.mcp.json` and settings files, `package.json`, the kit's own
+ * `gateway.json` and `workflow.json`. The one home of that read, so every reader agrees.
  *
  * Why it is not a plain `JSON.parse`: an editor on Windows (Notepad, an older PowerShell's
  * `Set-Content -Encoding UTF8`) saves UTF-8 with a byte order mark, U+FEFF, at the start.
