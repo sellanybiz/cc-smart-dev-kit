@@ -11,7 +11,7 @@ Moves seven copies that a slop audit found back onto their one shared home
 - **A `workflow.json` saved with a byte order mark reads.** Windows Notepad adds one. The read
   path refused such a file while `workflow set` accepted it, and the hooks then dropped your
   defaults without a word. The file, and the status-line check of `~/.claude/settings.json`, now
-  go through the same reader as every other hand-edited file.
+  go through the kit's shared reader for files a person edits, which skips the mark.
 - **`workflow propose` starts `gh pr create` through the kit's one `gh` runner,** and so does
   `project init`, which now opens no console window on Windows. A `gh` stopped by a signal still
   keeps the pushed branch, because the pull request may exist.

@@ -19,9 +19,12 @@ export function taskGit(repo: string, args: string[], env: Env = process.env): s
   if (!result.ok) throw new Error(`git ${args[0]} failed: ${result.err}`);
   return result.out;
 }
-/** The commit `ref` names, or a throw when git does not know it: the one way a ref becomes a commit here. */
+/**
+ * The commit `ref` names, or a throw when git does not know it: the one way a ref becomes a commit
+ * here. `commitArgs` without `--quiet`, so git's own error reaches `unreadableRefMessage`.
+ */
 export function refCommit(repo: string, ref: string, env: Env = process.env): string {
-  return taskGit(repo, ["rev-parse", "--verify", "--end-of-options", `${ref}^{commit}`], env);
+  return taskGit(repo, ["rev-parse", "--verify", `${ref}^{commit}`], env);
 }
 /**
  * The words for a ref git does not know: the fetch advice, then what to name instead. The release
