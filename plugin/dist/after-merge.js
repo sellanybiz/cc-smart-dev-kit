@@ -10138,7 +10138,7 @@ import {
   unlinkSync as unlinkSync2
 } from "fs";
 import { dirname as dirname4, join as join7 } from "path";
-var PARSER_FINGERPRINT = "adbdedec7c35207e52adf49e3ba468ec42d013c04b44e64d9d6afd2b186ceccd";
+var PARSER_FINGERPRINT = "017ad9b973a1e5beca067c00474a5584289769924b661251e57e92c9f2769237";
 var CHECKED_DIR = "checked";
 var CHECKED_CACHE_LIMIT = 64;
 var CHECKED_FILE_MAX_BYTES = 256 * 1024;

@@ -129,9 +129,10 @@ Notepad, and an older PowerShell's `Set-Content -Encoding UTF8`, save UTF-8 with
 mark (U+FEFF) first. `JSON.parse` refuses that character, so every reader of a JSON file a
 person may edit (`settings.json`, Claude Code's own files, a project's `.mcp.json` and
 `.claude/settings*.json`, `package.json`, the gateway's `gateway.json`, your `workflow.json` and
-`machines.json`)
-goes through `readUserJson` or `parseUserJson` in `src/setup/user-json.ts`, which skips it. A file setup writes again is written
-without the mark, the form Claude Code writes itself.
+herdr's `machines.json`) goes through `readUserJson` or `parseUserJson` in
+`src/setup/user-json.ts`, which skips it, as Claude Code does (`docs/claude-code-contract.md`
+§ Hooks). A file setup writes again is written without the mark, the form Claude Code writes
+itself.
 
 ## File modes on Windows: the ACL, not `chmod`
 
