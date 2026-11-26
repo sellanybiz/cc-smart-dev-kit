@@ -20,7 +20,12 @@ import type { Env } from "../hooks/run";
 import { locateCheckout } from "../project/resolve";
 import { shellWord } from "../shell/quote";
 import { taskContext, taskWriteRefusal } from "../tasks/context";
-import { type OverlapCheck, planFilesCheck, warnOverlaps } from "../tasks/files-check";
+import {
+  type OverlapCheck,
+  overlapSummary,
+  planFilesCheck,
+  warnOverlaps,
+} from "../tasks/files-check";
 import { branchTip, judgeStacks, provedPairs, type StackJudgment } from "../tasks/stack-proof";
 import { openWorkDb, type WorkDb, workDbFile } from "../tasks/work/db";
 import { CLAIM_PROCESS, callerOf } from "../tasks/work/identity";
@@ -680,13 +685,14 @@ function readiness(
   for (const other of rivals) {
     const touched = filesOverlap(plan.files, other.files, world.check);
     if (touched.length === 0) continue;
-    const files = [...new Set(touched.map((t) => t.path))].join(", ");
-    const closed = isOpen(other.plan) ? "" : " (finished: held until its pull request settles)";
-    clashes.push(`${label(other.plan)}${closed}: ${files}`);
+    const closed = isOpen(other.plan)
+      ? ""
+      : ` (${label(other.plan)} is finished: held until its pull request settles)`;
+    clashes.push(`${overlapSummary(plan, other.plan, touched)}${closed}`);
     if (plan.stackedOn !== null && other.plan.plan === plan.stackedOn)
       fixes.push(unprovedStackFix(plan, other.plan, stacks.get(plan.id), byId));
   }
-  if (clashes.length > 0) shared.push(`overlaps ${clashes.join("; ")}`);
+  if (clashes.length > 0) shared.push(...clashes);
   if (shared.length > 0)
     return line(
       "ready",

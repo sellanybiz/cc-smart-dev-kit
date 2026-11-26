@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { mkdirSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { cliPaths } from "../cli/paths";
 import { claudeMemDb, mistakenImport } from "../testing/claude-mem-db";
@@ -351,4 +351,54 @@ test("task import claude-mem leaves claude-mem's own lists out, and drops what a
     lines: [kept, own, "Nothing new to import."],
     error: "",
   });
+});
+
+test("task import claude-mem is refused up front by a project file this kit cannot use; its dry run still answers", async () => {
+  const home = tempDir();
+  const cwd = tempDir();
+  git(cwd, "init", "-b", "main");
+  git(cwd, "commit", "--allow-empty", "-m", "initial");
+  mkdirSync(join(cwd, ".claude"));
+  writeFileSync(
+    join(cwd, ".claude", "cc-smart-dev-kit.json"),
+    JSON.stringify({ requires: ">=99.0" }),
+  );
+  const guard = subprocessGuard();
+  const env = {
+    ...cleanGitEnv(),
+    ...guard.env,
+    HOME: home,
+    CLAUDE_CONFIG_DIR: join(home, ".claude"),
+    PATH: `${dirname(process.execPath)}:${dirname(Bun.which("git") ?? "/usr/bin/git")}`,
+  };
+  const paths = cliPaths(env);
+  mkdirSync(dirname(paths.claudeMemSettingsFile), { recursive: true });
+  claudeMemDb(
+    [["release-work", { task: "Ship it", status: "todo" }, Date.UTC(2026, 10, 1)]],
+    dirname(paths.claudeMemSettingsFile),
+  );
+  const run = async (...args: string[]) => {
+    const child = Bun.spawn([Bun.which("bun") ?? "bun", ...guard.args, CLI, "task", ...args], {
+      cwd,
+      env,
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    return {
+      code: await child.exited,
+      out: await new Response(child.stdout).text(),
+      error: await new Response(child.stderr).text(),
+    };
+  };
+  const refused = await run("import", "claude-mem", "--project", "home");
+  expect(refused.code).not.toBe(0);
+  expect(refused.error).toContain("Task writes are refused: ");
+  expect(refused.error).toContain(">=99.0");
+  // Refused before the store is opened: there is no store yet.
+  expect(existsSync(workDbFile(paths))).toBe(false);
+  const dry = await run("import", "claude-mem", "--project", "home", "--dry-run");
+  expect([dry.code, dry.out]).toEqual([
+    0,
+    "release-work\n  Ship it\nDry run: nothing was changed.\n",
+  ]);
 });

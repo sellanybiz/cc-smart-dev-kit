@@ -9,7 +9,7 @@
  * An overlap never refuses. After the write, `warnOverlaps` gives the caller's answer one line
  * for each, and saves the same text as an `Overlap:` note on both plans, once.
  */
-import { COMMAND } from "../build-info/names";
+import { COMMAND, PLUGIN } from "../build-info/names";
 import { runGit, runGitRaw } from "../hooks/git";
 import type { Env } from "../hooks/run";
 import { generatedChecks, generatedIn, openBaseOnlyGit } from "../project/generated";
@@ -20,7 +20,7 @@ import { resolvePlanFiles } from "../workflow/resolve";
 import { baseBranch } from "../worktrees/command";
 import { TASK_TOOL } from "./words";
 import type { WorkDb } from "./work/db";
-import { type FileOverlap, planLead } from "./work/queries";
+import { type FileOverlap, filesOverlap, planLead, settledBy } from "./work/queries";
 import {
   addNotesOnce,
   type FilesCheck,
@@ -144,14 +144,28 @@ function baseGenerated(
 /** How every overlap note starts, so a later session finds it among a plan's notes. */
 const OVERLAP_NOTE = "Overlap:";
 
+/**
+ * About how many characters one list of paths may take in a note; the rest are counted. A folder
+ * can hold thousands of generated files, and a note longer than `NOTE_LIMIT` is never saved.
+ */
+const NOTE_LIST_CHARS = 2_000;
+
+/** `items` joined with ", ", the first always shown, the ones past `NOTE_LIST_CHARS` counted. */
+function cappedList(items: readonly string[]): string {
+  let shown = 0;
+  let size = 0;
+  for (const item of items) {
+    if (shown > 0 && size + item.length > NOTE_LIST_CHARS) break;
+    shown += 1;
+    size += item.length + 2;
+  }
+  const listed = items.slice(0, shown).join(", ");
+  return shown < items.length ? `${listed} and ${items.length - shown} more` : listed;
+}
+
 /** The paths two plans share: of two paths that touch, the inner one (a file, or the inner folder). */
 function sharedPath(overlap: FileOverlap): string {
   return overlap.path.length >= overlap.other.length ? overlap.path : overlap.other;
-}
-
-/** True when `file` is `path`, or sits in the folder `path`. */
-function within(file: string, path: string): boolean {
-  return file === path || (path.endsWith("/") && file.startsWith(path));
 }
 
 /** A plan's lead, in words: its reservation's session, else the session that owns its task. */
@@ -162,27 +176,65 @@ function leadWords(plan: WorkTask): string | null {
 }
 
 /**
- * The note for an overlap of files, and the head that makes it once per pair and path set: the two
- * plans in number order and the paths they share, each path from the lower plan's list with the
- * higher plan's beside it when they differ (`src/b/ (src/b/x.ts)`). Then the leads, the rule for
- * the plan that merges second, a list that was not read in full, and the base's generated files
- * among the shared paths with the ready `workflow propose` line.
+ * Two plans and the paths they share, in number order, each path from the lower plan's list with
+ * the higher plan's beside it when they differ: `#1 "a" and #2 "b" share src/b/ (src/b/x.ts)`.
+ * `overlaps` holds `plan`'s paths first (`filesOverlap(plan's list, other's list)`).
+ */
+export function overlapSummary(
+  plan: WorkTask,
+  other: WorkTask,
+  overlaps: readonly FileOverlap[],
+): string {
+  const flip = plan.number > other.number;
+  const [low, high] = flip ? [other, plan] : [plan, other];
+  const shown = overlaps.map(({ path, other: theirs }) => {
+    const [mine, them] = flip ? [theirs, path] : [path, theirs];
+    return mine === them ? mine : `${mine} (${them})`;
+  });
+  return `${label(low)} and ${label(high)} share ${cappedList([...new Set(shown)].sort())}`;
+}
+
+/**
+ * What the note says of the base's generated files among the shared paths: the ready
+ * `workflow propose` line when listing them in `plans.mergeFiles` would settle every shared path
+ * that holds them. It would not for a folder both plans list (a merge file settles only its own
+ * path, `settledBy`), so that gets the two ways that do.
+ */
+function generatedWords(
+  overlap: PlanOverlap,
+  marks: BaseGenerated,
+  generated: readonly string[],
+  check: OverlapCheck,
+): string {
+  const named = `${marks.ref} marks ${cappedList(generated)} generated`;
+  if (check.reason)
+    return `${named}; no propose line, since the current plans.mergeFiles is not known in full.`;
+  const proposed = [...new Set([...check.ignore, ...generated])];
+  const left = filesOverlap(...overlap.lists, { ...check, ignore: proposed }).map(sharedPath);
+  const folders = left.filter((path) => generated.some((file) => settledBy([path], file)));
+  if (folders.length > 0)
+    return `${named}, but a merge file does not settle a folder both plans list (${cappedList([...new Set(folders)].sort())}): narrow that folder entry to the files the plan changes, or put the folder itself in plans.mergeFiles.`;
+  const list = proposed.join(",");
+  if (list.length > NOTE_LIST_CHARS)
+    return `${named}: too many for one propose line, so put the folder that holds them in plans.mergeFiles.`;
+  return `${named}: \`${COMMAND} workflow propose plans.mergeFiles ${shellWord(list)}\` opens the pull request that leaves them out of every overlap once the person merges it.`;
+}
+
+/**
+ * The note for an overlap of files, and its head (`overlapSummary`), which makes it once per pair
+ * and path set. Then the leads, a pointer to the catch-up rule, a list that was not read in full,
+ * and the base's generated files among the shared paths (`generatedWords`).
  */
 function overlapNote(
   overlap: PlanOverlap,
   marks: BaseGenerated | null,
   check: OverlapCheck,
 ): { head: string; text: string } {
-  const flip = overlap.plan.number > overlap.other.number;
-  const [low, high] = flip ? [overlap.other, overlap.plan] : [overlap.plan, overlap.other];
-  const shown = overlap.overlaps.map(({ path, other }) => {
-    const [mine, theirs] = flip ? [other, path] : [path, other];
-    return mine === theirs ? mine : `${mine} (${theirs})`;
-  });
-  const head = `${OVERLAP_NOTE} ${label(low)} and ${label(high)} share ${[...new Set(shown)].sort().join(", ")}.`;
-  const leads = [low, high].map(leadWords).filter((words) => words !== null);
+  const head = `${OVERLAP_NOTE} ${overlapSummary(overlap.plan, overlap.other, overlap.overlaps)}.`;
+  const pair = [overlap.plan, overlap.other].sort((a, b) => a.number - b.number);
+  const leads = pair.map(leadWords).filter((words) => words !== null);
   // A plan closed but still reserved holds its files until its pull request settles.
-  const settling = [low, high]
+  const settling = pair
     .filter((plan) => plan.status === "done")
     .map(
       (plan) =>
@@ -192,24 +244,16 @@ function overlapNote(
     head,
     ...(leads.length > 0 ? [`Leads: ${leads.join("; ")}.`] : []),
     ...settling,
-    "Both may run at once: the plan that merges second rebases onto the first one's merged code (or merges it in, once pushed), resolves the conflicts, reruns the full check, and names the other plan and these files in its pull request.",
+    `Both may run at once; the plan that merges second catches up (\`/${PLUGIN}:build\` § 6, An overlapping plan).`,
   ];
   if (check.reason)
     parts.push(
       `plans.mergeFiles was not read in full, so a merge file may count: ${check.reason}.`,
     );
   const regions = overlap.overlaps.map(sharedPath);
-  const generated =
-    marks === null ? [] : marks.files.filter((file) => regions.some((path) => within(file, path)));
-  if (marks !== null && generated.length > 0) {
-    const named = `${marks.ref} marks ${generated.join(", ")} generated`;
-    const list = [...new Set([...check.ignore, ...generated])].join(",");
-    parts.push(
-      check.reason
-        ? `${named}; no propose line, since the current plans.mergeFiles is not known in full.`
-        : `${named}: \`${COMMAND} workflow propose plans.mergeFiles ${shellWord(list)}\` opens the pull request that leaves them out of every overlap once the person merges it.`,
-    );
-  }
+  const generated = marks === null ? [] : marks.files.filter((file) => settledBy(regions, file));
+  if (marks !== null && generated.length > 0)
+    parts.push(generatedWords(overlap, marks, generated, check));
   return { head, text: parts.join(" ") };
 }
 
@@ -225,6 +269,7 @@ function unlistedLine({ plan, other }: PlanOverlap, unlisted: WorkTask): string 
  * plans, once (`addNotesOnce`, by its head), so a later or another session sees it; a wider or
  * other set of shared paths is a new note. Plans that cannot be compared (no file list) get a
  * line and no note. The base's generated marks are read only here, only when files overlap.
+ * It never throws: it runs after the write committed, and an overlap never refuses.
  */
 export function warnOverlaps(
   db: WorkDb,
@@ -234,8 +279,17 @@ export function warnOverlaps(
   now: number,
 ): string[] {
   const regions = [...new Set(found.flatMap((overlap) => overlap.overlaps.map(sharedPath)))].sort();
-  const marks = regions.length > 0 && check.generated ? check.generated(regions) : null;
   const lines: string[] = [];
+  let marks: BaseGenerated | null = null;
+  // The write has landed: a reader that fails leaves the warning plain, never the answer an error.
+  if (regions.length > 0 && check.generated)
+    try {
+      marks = check.generated(regions);
+    } catch (error) {
+      lines.push(
+        `The generated files could not be read: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
   const notes: NoteOnce[] = [];
   for (const overlap of found) {
     if (overlap.unlisted !== null) {

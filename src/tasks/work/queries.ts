@@ -776,6 +776,10 @@ export function notesOf(db: WorkDb, task: string | WorkTask): WorkNote[] {
     )
     .all(typeof task === "string" ? task : task.id);
 }
+/** True when `task` holds a note whose text starts with `start`. */
+export function holdsNoteStarting(db: WorkDb, task: string | WorkTask, start: string): boolean {
+  return notesOf(db, task).some((note) => note.text.startsWith(start));
+}
 interface EventRow {
   id: number;
   task_id: string;

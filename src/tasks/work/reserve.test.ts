@@ -9,6 +9,7 @@ import { COMMAND } from "../../build-info/names";
 import { cliPaths } from "../../cli/paths";
 import { claudeMemDb } from "../../testing/claude-mem-db";
 import { hookEnv, makeRepo } from "../../testing/hooks";
+import { overlapLines, overlapNotes, sharedWords } from "../../testing/overlap-lines";
 import { tempDir } from "../../testing/temp";
 import { folderProject } from "../context";
 import { type OverlapCheck, warnOverlaps } from "../files-check";
@@ -17,7 +18,7 @@ import { openWorkDb, workDbFile } from "./db";
 import { sessionEnded } from "./identity";
 import { importClaudeMem } from "./import-claude-mem";
 import { classifyLeadPlans, type LeadPlanState } from "./lead-plans";
-import { allTasks, eventsOf, heldPlans, isLead, notesOf, taskById } from "./queries";
+import { allTasks, eventsOf, heldPlans, isLead, taskById } from "./queries";
 import {
   createTask,
   type PlanOverlap,
@@ -113,21 +114,9 @@ function reserveWarned(
   const judged = check ?? { ignore: over.ignore ?? [], caseFold: over.caseFold ?? false };
   return { reserved, lines: warnOverlaps(db, found, judged, over.who ?? LEAD, 11) };
 }
-/** The opening words of an overlap line or note: the two plans and what they share. */
-function shared(line: string): string {
-  const head = /^Overlap: (.*? share .*?)\.(?: |$)/.exec(line);
-  if (head === null) throw new Error(`not an overlap line: ${line}`);
-  return head[1] ?? "";
-}
-/** The `Overlap:` notes of a task, oldest first. */
-function overlapNotes(db: Db, id: string): string[] {
-  return notesOf(db, id)
-    .map((note) => note.text)
-    .filter((text) => text.startsWith("Overlap:"));
-}
 /** The rule every overlap note carries for the plan that merges second. */
 const SECOND_RULE =
-  "Both may run at once: the plan that merges second rebases onto the first one's merged code (or merges it in, once pushed), resolves the conflicts, reruns the full check, and names the other plan and these files in its pull request.";
+  "Both may run at once; the plan that merges second catches up (`/cc-smart-dev-kit:build` § 6, An overlapping plan).";
 
 test("a reservation writes the lead, records it in the history, and the plan is held", () => {
   const { db } = setup();
@@ -232,11 +221,11 @@ test("merge files take no part in the warning, and case folds when the file syst
   ok(reserve(db, "alpha"));
   expect(reserveWarned(db, "beta", { ignore: ["CHANGELOG.md", "plugin/dist/"] }).lines).toEqual([]);
   // Folded: `SRC/A/y.ts` sits in `src/a/`.
-  expect(reserveWarned(db, "gamma", { caseFold: true }).lines.map(shared)).toEqual([
+  expect(reserveWarned(db, "gamma", { caseFold: true }).lines.map(sharedWords)).toEqual([
     '#1 "alpha" and #3 "gamma" share src/a/ (SRC/A/y.ts)',
   ]);
   // Without the merge list, the shared file is warned of, once for each plan that holds it.
-  expect(reserveWarned(db, "delta").lines.map(shared)).toEqual([
+  expect(reserveWarned(db, "delta").lines.map(sharedWords)).toEqual([
     '#1 "alpha" and #4 "delta" share CHANGELOG.md',
     '#2 "beta" and #4 "delta" share CHANGELOG.md',
   ]);
@@ -257,7 +246,7 @@ test("a held plan's branch diff counts: files its branch reached overlap too", (
   expect(reserveWarned(db, "beta").lines).toEqual([]);
   ok(releasePlan(db, { project: "p", plan: "beta", who: LEAD, now: 12 }));
   const extraFiles = { [alpha.id]: ["lib/stray.ts"] };
-  expect(reserveWarned(db, "beta", { extraFiles }).lines.map(shared)).toEqual([
+  expect(reserveWarned(db, "beta", { extraFiles }).lines.map(sharedWords)).toEqual([
     '#1 "alpha" and #2 "beta" share lib/stray.ts',
   ]);
 });
@@ -271,7 +260,7 @@ test("two reservations at once: the second one reads the first and warns", () =>
     // Each connection is its own session of the store; the write lock orders them.
     expect(ok(reserve(db, "alpha")).lead?.sessionId).toBe("lead");
     const { reserved, lines } = reserveWarned(second, "beta");
-    expect(lines.map(shared)).toEqual([
+    expect(lines.map(sharedWords)).toEqual([
       '#1 "alpha" and #2 "beta" share src/shared/a.ts (src/shared/)',
     ]);
     expect(leadOf(second, reserved.id)?.sessionId).toBe("lead");
@@ -288,7 +277,7 @@ test("a session's own plan in flight is held without a reservation", () => {
   expect(heldPlans(db, "p", LEAD).map((h) => [h.plan.plan, h.why, h.mine])).toEqual([
     ["solo", "in-flight", false],
   ]);
-  expect(reserveWarned(db, "alpha").lines.map(shared)).toEqual([
+  expect(reserveWarned(db, "alpha").lines.map(sharedWords)).toEqual([
     '#1 "solo" and #2 "alpha" share src/s/ (src/s/x.ts)',
   ]);
   // Once it stops running it holds nothing.
@@ -304,7 +293,7 @@ test("a release frees the files; a plan done but not released still holds them; 
   ok(reserve(db, "alpha"));
   ok(updateTask(db, alpha.id, { status: "done" }, LEAD, 5));
   // The child's pull request may still be open: the reservation holds until it is released.
-  expect(reserveWarned(db, "beta").lines.map(shared)).toEqual([
+  expect(reserveWarned(db, "beta").lines.map(sharedWords)).toEqual([
     '#1 "alpha" and #2 "beta" share src/a/ (src/a/x.ts)',
   ]);
   ok(releasePlan(db, { project: "p", plan: "beta", who: LEAD, now: 5 }));
@@ -350,7 +339,7 @@ test("a held plan's files may grow into another held plan, by stored lists: the 
   expect(grow(beta, ["src/b/", "src/a/inner.ts"], ["src/a/"], 7)).toEqual([]);
   // A plan that is not held takes any list unjudged: its reservation finds the overlap later.
   expect(grow(gamma, ["src/a/"], [], 8)).toEqual([]);
-  expect(reserveWarned(db, "gamma").lines.map(shared)).toEqual([
+  expect(reserveWarned(db, "gamma").lines.map(sharedWords)).toEqual([
     '#1 "alpha" and #3 "gamma" share src/a/',
     '#2 "beta" and #3 "gamma" share src/a/inner.ts (src/a/)',
   ]);
@@ -436,13 +425,6 @@ function notesIn(w: ReturnType<typeof world>, ref: string): string[] {
     db.close();
   }
 }
-/** The warning lines of an answer: the lines after its first that start `Overlap`. */
-function warnings(text: string): string[] {
-  return text
-    .split("\n")
-    .slice(1)
-    .filter((line) => line.startsWith("Overlap"));
-}
 
 test("the lead reserves its own plan, starts it, and a later overlapping reservation warns", () => {
   const w = world();
@@ -457,7 +439,7 @@ test("the lead reserves its own plan, starts it, and a later overlapping reserva
     expect(said(ops.call("get", { task: "#1" }))).toContain("[plan · in progress]");
     expect(said(ops.call("get", { task: "#1" }))).toContain("Reserved for: session lead");
     // Held twice over now (reserved and in flight): a child's plan on its files is warned of.
-    expect(reserveWarnedIn(w, "beta", LEAD).map(shared)).toEqual([
+    expect(reserveWarnedIn(w, "beta", LEAD).map(sharedWords)).toEqual([
       '#1 "alpha" and #4 "Beta" share src/a/ (src/a/inner.ts)',
     ]);
     // A plan on other files is handed out.
@@ -476,7 +458,7 @@ test("another session's unreserved plan in flight is warned of when an overlappi
     said(lead.call("create", { subject: "Alpha", plan: "alpha", files: ["src/s/x.ts"] }));
     said(other.call("update", { task: solo.phase, status: "in_progress" }));
     const lines = reserveWarnedIn(w, "alpha", LEAD);
-    expect(lines.map(shared)).toEqual(['#1 "solo" and #4 "Alpha" share src/s/ (src/s/x.ts)']);
+    expect(lines.map(sharedWords)).toEqual(['#1 "solo" and #4 "Alpha" share src/s/ (src/s/x.ts)']);
     expect(lines[0]).toContain("Leads: #1 session other; #4 session lead.");
     expect(notesIn(w, "#1")).toEqual(lines);
     expect(notesIn(w, "#4")).toEqual(lines);
@@ -495,15 +477,15 @@ test("task_update files on a held plan reads the merge files before the lock and
     expect(ok(reserveIn(w, "alpha", LEAD)).lead).not.toBeNull();
     expect(ok(reserveIn(w, "beta", LEAD)).lead).not.toBeNull();
     const answer = said(ops.call("update", { task: "#4", files: ["src/b/", "src/a/x.ts"] }));
-    expect(warnings(answer).map(shared)).toEqual([
+    expect(overlapLines(answer).map(sharedWords)).toEqual([
       '#1 "alpha" and #4 "Beta" share src/a/ (src/a/x.ts)',
     ]);
     expect(said(ops.call("get", { task: "#4" }))).toContain("Files: src/a/x.ts, src/b/");
-    expect(notesIn(w, "#1")).toEqual(warnings(answer));
-    expect(notesIn(w, "#4")).toEqual(warnings(answer));
-    expect(warnings(said(ops.call("update", { task: "#4", files: ["src/b/", "docs/"] })))).toEqual(
-      [],
-    );
+    expect(notesIn(w, "#1")).toEqual(overlapLines(answer));
+    expect(notesIn(w, "#4")).toEqual(overlapLines(answer));
+    expect(
+      overlapLines(said(ops.call("update", { task: "#4", files: ["src/b/", "docs/"] }))),
+    ).toEqual([]);
   } finally {
     ops.close();
   }
@@ -538,8 +520,8 @@ test("task_update files on a held plan works with the real git read of the check
       );
     // No origin and no committed list: the merge files are empty, the check still runs, and no
     // base means no generated file is named.
-    const lines = warnings(said(lead.call("update", { task: "#2", files: ["src/a/"] })));
-    expect(lines.map(shared)).toEqual(['#1 "Alpha" and #2 "Beta" share src/a/']);
+    const lines = overlapLines(said(lead.call("update", { task: "#2", files: ["src/a/"] })));
+    expect(lines.map(sharedWords)).toEqual(['#1 "Alpha" and #2 "Beta" share src/a/']);
     expect(lines[0]).not.toContain("generated");
   } finally {
     db.close();
@@ -997,8 +979,8 @@ test("L1 and L2: the merge files are read for every list, and a read that fell s
           now: 5,
         }),
       );
-    const lines = warnings(said(ops.call("update", { task: "#2", files: ["src/a/x.ts"] })));
-    expect(lines.map(shared)).toEqual(['#1 "Alpha" and #2 "Beta" share src/a/ (src/a/x.ts)']);
+    const lines = overlapLines(said(ops.call("update", { task: "#2", files: ["src/a/x.ts"] })));
+    expect(lines.map(sharedWords)).toEqual(['#1 "Alpha" and #2 "Beta" share src/a/ (src/a/x.ts)']);
     expect(lines[0]).toEndWith(
       "plans.mergeFiles was not read in full, so a merge file may count: no ref origin/main was found.",
     );
@@ -1117,12 +1099,12 @@ test("a solo first start that overlaps a reserved plan starts, with the warning,
   const beta = laidPlan(w, OTHER, "beta", ["src/a/x.ts"]);
   expect(ok(reserveIn(w, "alpha", LEAD)).lead).not.toBeNull();
   const answer = said(startPhase(w, OTHER, beta.phase));
-  expect(warnings(answer)).toEqual([
+  expect(overlapLines(answer)).toEqual([
     `Overlap: #1 "alpha" and #4 "beta" share src/a/ (src/a/x.ts). Leads: #1 session lead; #4 session other. ${SECOND_RULE}`,
   ]);
   expect(planStatus(w, "beta")).toBe("in_progress");
-  expect(notesIn(w, "#1")).toEqual(warnings(answer));
-  expect(notesIn(w, "#4")).toEqual(warnings(answer));
+  expect(notesIn(w, "#1")).toEqual(overlapLines(answer));
+  expect(notesIn(w, "#4")).toEqual(overlapLines(answer));
 });
 
 test("a solo first start that overlaps another session's plan in flight starts, with the warning", () => {
@@ -1131,7 +1113,7 @@ test("a solo first start that overlaps another session's plan in flight starts, 
   const beta = laidPlan(w, OTHER, "beta", ["src/s/inner/"]);
   said(startPhase(w, LEAD, solo.phase));
   expect(planStatus(w, "solo")).toBe("in_progress");
-  expect(warnings(said(startPhase(w, OTHER, beta.phase))).map(shared)).toEqual([
+  expect(overlapLines(said(startPhase(w, OTHER, beta.phase))).map(sharedWords)).toEqual([
     '#1 "solo" and #4 "beta" share src/s/ (src/s/inner/)',
   ]);
   expect(planStatus(w, "beta")).toBe("in_progress");
@@ -1142,7 +1124,7 @@ test("a start of a plan with no file list beside a reserved plan starts, with th
   laidPlan(w, LEAD, "alpha", ["src/a/"]);
   const beta = laidPlan(w, OTHER, "beta", []);
   expect(ok(reserveIn(w, "alpha", LEAD)).lead).not.toBeNull();
-  expect(warnings(said(startPhase(w, OTHER, beta.phase)))).toEqual([
+  expect(overlapLines(said(startPhase(w, OTHER, beta.phase)))).toEqual([
     'Overlap unknown: #4 "beta" has no file list, so it cannot be compared with #1 "alpha": set its files (task_update on #4 with files).',
   ]);
   expect(planStatus(w, "beta")).toBe("in_progress");
@@ -1152,11 +1134,11 @@ test("a start of a plan with no file list beside a reserved plan starts, with th
 test("a solo user who never hands out a plan sees no warning", () => {
   const w = world();
   const solo = laidPlan(w, LEAD, "solo", []);
-  expect(warnings(said(startPhase(w, LEAD, solo.phase)))).toEqual([]);
+  expect(overlapLines(said(startPhase(w, LEAD, solo.phase)))).toEqual([]);
   expect(planStatus(w, "solo")).toBe("in_progress");
   // Another session's plan in flight is not a reserved plan: with no list, no warning.
   const second = laidPlan(w, OTHER, "second", []);
-  expect(warnings(said(startPhase(w, OTHER, second.phase)))).toEqual([]);
+  expect(overlapLines(said(startPhase(w, OTHER, second.phase)))).toEqual([]);
   expect(planStatus(w, "second")).toBe("in_progress");
 });
 
@@ -1195,13 +1177,13 @@ test("a plan task started directly, and a task made in progress, are judged the 
   expect(ok(reserveIn(w, "alpha", LEAD)).lead).not.toBeNull();
   const other = w.ops(OTHER);
   try {
-    const first = warnings(said(other.call("update", { task: "#4", status: "in_progress" })));
-    expect(first.map(shared)).toEqual(['#1 "alpha" and #4 "beta" share src/a/']);
+    const first = overlapLines(said(other.call("update", { task: "#4", status: "in_progress" })));
+    expect(first.map(sharedWords)).toEqual(['#1 "alpha" and #4 "beta" share src/a/']);
     expect(planStatus(w, "beta")).toBe("in_progress");
     // Parked, then started again by a task made running: the same warning, and no second note.
     said(other.call("update", { task: "#4", status: "pending" }));
     expect(
-      warnings(
+      overlapLines(
         said(other.call("create", { subject: "Work", parent: "#5", status: "in_progress" })),
       ),
     ).toEqual(first);
@@ -1240,7 +1222,7 @@ test("a phase started by a session that does not own the plan is judged like the
   const beta = laidPlan(w, OTHER, "beta", ["src/a/x.ts"]);
   expect(ok(reserveIn(w, "alpha", LEAD)).lead).not.toBeNull();
   // A third session starts the phase of OTHER's plan: the plan goes into flight all the same.
-  expect(warnings(said(startPhase(w, THIRD, beta.phase))).map(shared)).toEqual([
+  expect(overlapLines(said(startPhase(w, THIRD, beta.phase))).map(sharedWords)).toEqual([
     '#1 "alpha" and #4 "beta" share src/a/ (src/a/x.ts)',
   ]);
   // Its running phase holds the plan; the plan task itself moves only for its owner's start.
@@ -1267,19 +1249,21 @@ test("a step started in a plan that is not in flight is judged too, and a step i
   const third = w.ops(THIRD);
   try {
     expect(
-      warnings(said(third.call("update", { task: betaStep, status: "in_progress" }))).map(shared),
+      overlapLines(said(third.call("update", { task: betaStep, status: "in_progress" }))).map(
+        sharedWords,
+      ),
     ).toEqual(['#1 "alpha" and #4 "beta" share src/a/ (src/a/x.ts)']);
     expect(statusOf(w, betaStep)).toBe("in_progress");
     // The running step holds the plan: a second step's start in it is not judged again.
     said(third.call("create", { subject: "beta second", parent: beta.phase }));
     expect(
-      warnings(
+      overlapLines(
         said(third.call("update", { task: numberOf(w, "beta second"), status: "in_progress" })),
       ),
     ).toEqual([]);
     // A disjoint plan runs with no warning.
     expect(
-      warnings(said(third.call("update", { task: gamma.phase, status: "in_progress" }))),
+      overlapLines(said(third.call("update", { task: gamma.phase, status: "in_progress" }))),
     ).toEqual([]);
     said(third.call("update", { task: gammaStep, status: "in_progress" }));
     expect(planStatus(w, "gamma")).toBe("in_progress");
@@ -1295,8 +1279,8 @@ test("a start beside a running and a reserved plan warns of each, and notes each
   const beta = laidPlan(w, THIRD, "beta", ["src/a/x.ts", "src/s/y.ts"]);
   said(startPhase(w, LEAD, solo.phase));
   expect(ok(reserveIn(w, "alpha", OTHER)).lead).not.toBeNull();
-  const lines = warnings(said(startPhase(w, THIRD, beta.phase)));
-  expect(lines.map(shared)).toEqual([
+  const lines = overlapLines(said(startPhase(w, THIRD, beta.phase)));
+  expect(lines.map(sharedWords)).toEqual([
     '#1 "solo" and #7 "beta" share src/s/ (src/s/y.ts)',
     '#4 "alpha" and #7 "beta" share src/a/ (src/a/x.ts)',
   ]);
@@ -1353,12 +1337,12 @@ test("a start is judged with the files check the caller read: plans.mergeFiles a
   try {
     // The merge file takes no part, so beta is clear of alpha; gamma differs from alpha only in case.
     expect(
-      warnings(said(ignoring.ops.call("update", { task: beta.phase, status: "in_progress" }))),
+      overlapLines(said(ignoring.ops.call("update", { task: beta.phase, status: "in_progress" }))),
     ).toEqual([]);
     expect(
-      warnings(said(folding.ops.call("update", { task: gamma.phase, status: "in_progress" }))).map(
-        shared,
-      ),
+      overlapLines(
+        said(folding.ops.call("update", { task: gamma.phase, status: "in_progress" })),
+      ).map(sharedWords),
     ).toEqual(['#1 "alpha" and #7 "gamma" share src/A.ts (src/a.ts)']);
   } finally {
     ignoring.ops.close();
@@ -1375,9 +1359,9 @@ test("a task created already running puts its plan into flight, and is judged li
   try {
     // A third session creates a running task under OTHER's phase, beside the reserved plan.
     expect(
-      warnings(
+      overlapLines(
         said(third.call("create", { subject: "sneak", parent: beta.phase, status: "in_progress" })),
-      ).map(shared),
+      ).map(sharedWords),
     ).toEqual(['#1 "alpha" and #4 "beta" share src/a/ (src/a/x.ts)']);
   } finally {
     third.close();
@@ -1435,7 +1419,7 @@ test("a step started in a plan holds the plan, so a later reservation that overl
   } finally {
     db.close();
   }
-  expect(reserveWarnedIn(w, "alpha", LEAD).map(shared)).toEqual([
+  expect(reserveWarnedIn(w, "alpha", LEAD).map(sharedWords)).toEqual([
     '#1 "beta" and #4 "alpha" share src/b/ (src/b/inner/)',
   ]);
 });
@@ -1561,12 +1545,16 @@ test("a step reopened, or a running task moved into a plan, is judged like a sta
   const warned = ['#1 "alpha" and #4 "beta" share src/a/ (src/a/x.ts)'];
   try {
     expect(
-      warnings(said(again.call("update", { task: step, status: "in_progress" }))).map(shared),
+      overlapLines(said(again.call("update", { task: step, status: "in_progress" }))).map(
+        sharedWords,
+      ),
     ).toEqual(warned);
     // Closed again, beta holds nothing; the running loose task moved in starts it once more.
     said(again.call("done", { task: step, evidence: "ran it again" }));
     expect(
-      warnings(said(again.call("update", { task: loose, parent: beta.phase }))).map(shared),
+      overlapLines(said(again.call("update", { task: loose, parent: beta.phase }))).map(
+        sharedWords,
+      ),
     ).toEqual(warned);
   } finally {
     again.close();
