@@ -12,6 +12,7 @@ import {
   type HeldPlan,
   heldPlansIn,
   holdingUnder,
+  holdsNoteStarting,
   isInFlight,
   isLead,
   isOpen,
@@ -19,7 +20,6 @@ import {
   leadsPlan,
   livePhaseCount,
   normalizePlanFiles,
-  notesOf,
   type OverlapRule,
   openBlockers,
   openChildren,
@@ -201,6 +201,8 @@ export interface PlanOverlap {
   other: WorkTask;
   /** Where the two lists touch, `path` from `plan`'s list (`filesOverlap`); empty when `unlisted` is set. */
   overlaps: FileOverlap[];
+  /** The two lists compared, `plan`'s then `other`'s as held (its branch diff too); empty when `unlisted` is set. */
+  lists: [readonly string[], readonly string[]];
   /** The one of the two that lists no file, so nothing can be compared; null for an overlap of files. */
   unlisted: WorkTask | null;
 }
@@ -390,12 +392,15 @@ function overlapsWith(
   check: OverlapRule,
 ): PlanOverlap[] {
   return held
-    .map(({ plan: other, files: theirs }) => ({
-      plan,
-      other,
-      overlaps: filesOverlap(files, theirs, check),
-      unlisted: null,
-    }))
+    .map(
+      ({ plan: other, files: theirs }): PlanOverlap => ({
+        plan,
+        other,
+        overlaps: filesOverlap(files, theirs, check),
+        lists: [files, theirs],
+        unlisted: null,
+      }),
+    )
     .filter((one) => one.overlaps.length > 0);
 }
 
@@ -438,7 +443,13 @@ function flightOverlaps(db: WorkDb, plan: WorkTask, who: Who, check: FilesCheck)
   }
   for (const held of others)
     if (held.why === "reserved")
-      check.found.push({ plan: row, other: held.plan, overlaps: [], unlisted: row });
+      check.found.push({
+        plan: row,
+        other: held.plan,
+        overlaps: [],
+        lists: [[], []],
+        unlisted: row,
+      });
 }
 
 /**
@@ -696,9 +707,9 @@ export function addNote(db: WorkDb, id: string, text: string, who: Who, now: num
 /** A note for several tasks, saved once on each (`addNotesOnce`). */
 export interface NoteOnce {
   taskIds: readonly string[];
-  /** The note's opening words: a task that holds a note starting with them gets no second one. */
+  /** The note's first sentence: a task that holds a note opening with that sentence gets no second one. */
   head: string;
-  /** The whole note; it starts with `head`. */
+  /** The whole note: `head`, a space, then the rest. */
   text: string;
 }
 
@@ -719,7 +730,8 @@ export function addNotesOnce(
     let saved = 0;
     for (const note of notes)
       for (const id of note.taskIds) {
-        if (notesOf(db, id).some((one) => one.text.startsWith(note.head))) continue;
+        // The space ends the head, so a shorter path set is not read as a longer one already noted.
+        if (holdsNoteStarting(db, id, `${note.head} `)) continue;
         saveNote(db, id, note.text, who, now, null);
         saved += 1;
       }
@@ -1125,7 +1137,15 @@ export function reservePlan(db: WorkDb, input: ReservePlan): Result<WorkTask> {
     const found: PlanOverlap[] = [
       ...others
         .filter((h) => h.files.length === 0)
-        .map((h) => ({ plan, other: h.plan, overlaps: [], unlisted: h.plan })),
+        .map(
+          (h): PlanOverlap => ({
+            plan,
+            other: h.plan,
+            overlaps: [],
+            lists: [[], []],
+            unlisted: h.plan,
+          }),
+        ),
       ...overlapsWith(plan, others, plan.files, input),
     ];
     const before = shape(db, plan);

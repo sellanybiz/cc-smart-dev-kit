@@ -48,6 +48,7 @@ import {
   eventsOf,
   freedBy,
   getTask,
+  holdsNoteStarting,
   inFlightPlanOf,
   isInFlight,
   isLead,
@@ -1202,11 +1203,7 @@ export function createTaskOps(options: TaskOpsOptions = {}) {
         // `parked:` note counts as parked only once it is not running (`planQueueState`).
         const queue =
           planLedger && task.kind === "plan" && isOpen(task)
-            ? planQueueState(
-                all,
-                task,
-                notesOf(store, task).some((n) => n.text.startsWith(PARK_NOTE_PREFIX)),
-              )
+            ? planQueueState(all, task, holdsNoteStarting(store, task, PARK_NOTE_PREFIX))
             : undefined;
         lines.push(
           `${"  ".repeat(depth)}#${task.number} [${stateWords(task, byId, false, queue)}] ${task.subject}${progress}${binding}${state === "another session" ? " (another session)" : ""}`,

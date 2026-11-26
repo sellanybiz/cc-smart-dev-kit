@@ -21,6 +21,7 @@ import {
 } from "../tasks/work/store";
 import type { ClaimProcess, Result, Who, WorkTask } from "../tasks/work/types";
 import { commitConfig, makeClone } from "../testing/hooks";
+import { sharedWords } from "../testing/overlap-lines";
 import { cleanGitEnv, git, tempDir } from "../testing/temp";
 import { launchedHere, writeLaunchRecord } from "./launch-record";
 import {
@@ -282,7 +283,7 @@ test("a held plan's branch diff counts in an overlap, and a rename counts on bot
   const line = w.line("mover");
   expect(line.state).toBe("ready");
   expect(line.text).toBe(
-    "ready: nothing blocks it; overlaps #1 holder: src/old.ts (an overlap warns and never holds a plan back)",
+    'ready: nothing blocks it; #1 "holder" and #2 "mover" share src/old.ts (an overlap warns and never holds a plan back)',
   );
 });
 
@@ -567,7 +568,7 @@ test("a ready start reserves the plan for a child before anything launches", () 
   const second = prepareStart(w.base, "clash");
   if (!second.ok) throw new Error(second.why);
   expect(second.warnings).toEqual([
-    'Overlap: #1 "first" and #2 "clash" share src/one/ (src/one/inner.ts). Leads: #1 session lead; #2 session lead. Both may run at once: the plan that merges second rebases onto the first one\'s merged code (or merges it in, once pushed), resolves the conflicts, reruns the full check, and names the other plan and these files in its pull request.',
+    'Overlap: #1 "first" and #2 "clash" share src/one/ (src/one/inner.ts). Leads: #1 session lead; #2 session lead. Both may run at once; the plan that merges second catches up (`/cc-smart-dev-kit:build` § 6, An overlapping plan).',
   ]);
   for (const id of [first.id, second.plan.id])
     expect(notesOf(w.db, id).map((note) => note.text)).toEqual(second.warnings);
@@ -785,9 +786,7 @@ test("a start refuses a guessed default branch even with --base: a held branch c
   // With the default branch known, the same start warns of the overlap the guess hid.
   const known = prepareStart(w.base, "mover");
   if (!known.ok) throw new Error(known.why);
-  expect(known.warnings.map((one) => one.split(". ")[0])).toEqual([
-    'Overlap: #1 "holder" and #2 "mover" share src/b/x.ts',
-  ]);
+  expect(known.warnings.map(sharedWords)).toEqual(['#1 "holder" and #2 "mover" share src/b/x.ts']);
 });
 
 test("the lead's own reservation also needs the default branch", () => {
@@ -1063,7 +1062,7 @@ test("a held plan with a file list, or a branch diff, still allows a disjoint ha
   expect(w.line("beta").state).toBe("ready");
   w.plan("gamma", ["docs/"]);
   expect(w.line("gamma").text).toBe(
-    "ready: nothing blocks it; overlaps #3 branched: docs/ (an overlap warns and never holds a plan back)",
+    'ready: nothing blocks it; #3 "branched" and #4 "gamma" share docs/x.md (docs/) (an overlap warns and never holds a plan back)',
   );
   expect(prepareStart(w.base, "beta").ok).toBe(true);
 });
@@ -1082,7 +1081,7 @@ test("a stacked plan is ready beside its held parent once it starts on its work,
   const unproved = w.line("beta");
   expect([unproved.state, unproved.text, unproved.fix]).toEqual([
     "ready",
-    "ready: nothing blocks it; overlaps #1 alpha: src/a/x.ts (an overlap warns and never holds a plan back)",
+    'ready: nothing blocks it; #1 "alpha" and #2 "beta" share src/a/ (src/a/x.ts) (an overlap warns and never holds a plan back)',
     "the stack on alpha counts only when this plan is built on alpha's work: cc-smart-dev-kit herdr start --plan beta starts it on alpha-branch when --base is left out; a plan built here rebuilds its branch on alpha-branch",
   ]);
   // A start on alpha's tip proves it; a start on the default branch does not.
@@ -1095,17 +1094,17 @@ test("a stacked plan is ready beside its held parent once it starts on its work,
     "alpha",
   ]);
   expect(started(base)?.text).toBe(
-    "ready: nothing blocks it; overlaps #1 alpha: src/a/x.ts (an overlap warns and never holds a plan back)",
+    'ready: nothing blocks it; #1 "alpha" and #2 "beta" share src/a/ (src/a/x.ts) (an overlap warns and never holds a plan back)',
   );
   // Started on the default branch, the hand-out goes ahead and warns of its parent.
   const offWork = prepareStart(w.base, "beta", base);
   if (!offWork.ok) throw new Error(offWork.why);
-  expect(offWork.warnings.map((one) => one.split(". ")[0])).toEqual([
-    'Overlap: #1 "alpha" and #2 "beta" share src/a/ (src/a/x.ts)',
+  expect(offWork.warnings.map(sharedWords)).toEqual([
+    '#1 "alpha" and #2 "beta" share src/a/ (src/a/x.ts)',
   ]);
   ok(releasePlan(w.db, { project: "p", plan: "beta", who: LEAD, now: 30 }));
   expect(w.line("gamma").text).toBe(
-    "ready: nothing blocks it; overlaps #1 alpha: src/a/y.ts (an overlap warns and never holds a plan back)",
+    'ready: nothing blocks it; #1 "alpha" and #3 "gamma" share src/a/ (src/a/y.ts) (an overlap warns and never holds a plan back)',
   );
   // The stacked plan's branch holds its parent's work: that is no drift against the parent.
   w.reserve("beta", { stacked: [{ child: beta.id, parent: "alpha" }] });
@@ -1260,7 +1259,7 @@ test("a hand-out that overlaps names the base's generated files with the ready p
     const second = prepareStart(world, order[1] ?? "");
     if (!second.ok) throw new Error(second.why);
     expect(second.warnings).toEqual([
-      `Overlap: #1 "folder" and #2 "file" share db/ (db/types.gen.ts). Leads: #1 session lead; #2 session lead. Both may run at once: the plan that merges second rebases onto the first one's merged code (or merges it in, once pushed), resolves the conflicts, reruns the full check, and names the other plan and these files in its pull request. origin/main marks db/types.gen.ts generated: \`${COMMAND} workflow propose plans.mergeFiles 'CHANGELOG.md,db/types.gen.ts'\` opens the pull request that leaves them out of every overlap once the person merges it.`,
+      `Overlap: #1 "folder" and #2 "file" share db/ (db/types.gen.ts). Leads: #1 session lead; #2 session lead. Both may run at once; the plan that merges second catches up (\`/cc-smart-dev-kit:build\` § 6, An overlapping plan). origin/main marks db/types.gen.ts generated: \`${COMMAND} workflow propose plans.mergeFiles 'CHANGELOG.md,db/types.gen.ts'\` opens the pull request that leaves them out of every overlap once the person merges it.`,
     ]);
     // The child of each plan finds it as the plan's first note.
     for (const id of [folder.id, file.id])

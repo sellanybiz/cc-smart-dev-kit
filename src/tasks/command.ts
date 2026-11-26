@@ -9,7 +9,7 @@ import { DEPLOY_TASKS_SINCE } from "../project/config";
 import { locateCheckout } from "../project/resolve";
 import { insideClaudeCode } from "../workflow/commands";
 import { baseBranch } from "../worktrees/command";
-import { taskContext } from "./context";
+import { taskContext, taskWriteRefusal } from "./context";
 import {
   branchTaskChanges,
   readGitFacts,
@@ -339,6 +339,9 @@ export async function runTaskCommand(argv: string[]): Promise<number> {
       if (command === "import") {
         if (args[0] !== "claude-mem")
           return bad("Use import claude-mem [--project <name>] [--dry-run]");
+        // The same up-front refusal as every task tool; a dry run writes nothing, so it still answers.
+        const gate = has("dry-run") ? null : taskWriteRefusal(ctx.projectConfig, process.env);
+        if (gate !== null) throw new Error(`${gate.why}. ${gate.fix}`);
         const db = openWorkDb(workDbFile(paths), { mode: "write" });
         try {
           const answer = importClaudeMem({
