@@ -1,8 +1,8 @@
 /**
  * A plan stacked on another (`stacked_on`), in the store: the overlap check skips that one parent
  * plan, both ways, while that parent holds its files (open, or done and still reserved until its
- * pull request merges), that very pair is proved, and one lead leads both; every other plan still
- * blocks. Only the lead of both plans sets a stack. What is refused, what the history shows, and
+ * pull request merges), that very pair is proved, and one lead leads both; every other overlap is
+ * still found and warned of. Only the lead of both plans sets a stack. What is refused, what the history shows, and
  * the schema step that brought the column. The proof from git and the task tools:
  * `src/tasks/stack-proof.test.ts`.
  */
@@ -22,6 +22,7 @@ import { readWorkStore } from "./read";
 import {
   createTask,
   deleteTask,
+  type PlanOverlap,
   type ReservePlan,
   releasePlan,
   reservePlan,
@@ -72,46 +73,60 @@ function reserve(db: Db, slug: string, over: Partial<ReservePlan> = {}) {
     ...over,
   });
 }
+/** The overlaps a write found, each as `plan ~ other: path (other's path)`. */
+function overlapWords(found: readonly PlanOverlap[]): string[] {
+  return found.map(
+    (one) =>
+      `${one.plan.plan} ~ ${one.other.plan}: ${one.overlaps.map((o) => (o.path === o.other ? o.path : `${o.path} (${o.other})`)).join(", ")}`,
+  );
+}
+/** Reserves `slug`, which must pass, and answers the overlaps the reservation found. */
+function reserveFound(db: Db, slug: string, over: Partial<ReservePlan> = {}): string[] {
+  const found: PlanOverlap[] = [];
+  ok(reserve(db, slug, { ...over, found }));
+  return overlapWords(found);
+}
 
 test("a proved stack is held beside its parent although they share files, both ways", () => {
   const first = setup();
   plan(first.db, "alpha", ["src/a/"]);
   const beta = plan(first.db, "beta", ["src/a/x.ts", "lib/b.ts"], "alpha");
   ok(reserve(first.db, "alpha"));
-  expect(ok(reserve(first.db, "beta", { stacked: [on(beta)] })).lead).not.toBeNull();
+  // The pair settles its shared paths: no overlap is found, so none is warned of.
+  expect(reserveFound(first.db, "beta", { stacked: [on(beta)] })).toEqual([]);
   // The parent judged after the stacked plan skips it too.
   const second = setup();
   plan(second.db, "alpha", ["src/a/"]);
   const stacked = plan(second.db, "beta", ["src/a/x.ts"], "alpha");
   ok(reserve(second.db, "beta", { stacked: [on(stacked)] }));
-  expect(ok(reserve(second.db, "alpha", { stacked: [on(stacked)] })).lead).not.toBeNull();
+  expect(reserveFound(second.db, "alpha", { stacked: [on(stacked)] })).toEqual([]);
 });
 
 test("a stack that is not proved is judged as rivals, both ways", () => {
   const first = setup();
   plan(first.db, "alpha", ["src/a/"]);
-  plan(first.db, "beta", ["src/a/x.ts"], "alpha");
+  const stacked = plan(first.db, "beta", ["src/a/x.ts"], "alpha");
   ok(reserve(first.db, "alpha"));
+  const rivals = ["beta ~ alpha: src/a/x.ts (src/a/)"];
+  /** Reserves beta with `proof`, answers what it found, and lets beta go again. */
+  const judged = (proof: { child: string; parent: string }[] | undefined) => {
+    const words = reserveFound(first.db, "beta", proof === undefined ? {} : { stacked: proof });
+    ok(releasePlan(first.db, { project: "p", plan: "beta", who: LEAD, now: 11 }));
+    return words;
+  };
   // No proof given (the store's own default), or a proof of another plan: the pair are rivals.
-  expect(why(reserve(first.db, "beta"))).toBe('#2 "beta" overlaps #1 "alpha": src/a/x.ts (src/a/)');
-  expect(
-    why(reserve(first.db, "beta", { stacked: [{ child: "w-another", parent: "alpha" }] })),
-  ).toBe('#2 "beta" overlaps #1 "alpha": src/a/x.ts (src/a/)');
+  expect(judged(undefined)).toEqual(rivals);
+  expect(judged([{ child: "w-another", parent: "alpha" }])).toEqual(rivals);
   // A proof of the same plan on another parent is no proof of this pair.
-  const first2 = allTasks(first.db, "p")[1] as WorkTask;
-  expect(why(reserve(first.db, "beta", { stacked: [{ child: first2.id, parent: "gamma" }] }))).toBe(
-    '#2 "beta" overlaps #1 "alpha": src/a/x.ts (src/a/)',
-  );
+  expect(judged([{ child: stacked.id, parent: "gamma" }])).toEqual(rivals);
   const reversed = setup();
   plan(reversed.db, "alpha", ["src/a/"]);
   const beta = plan(reversed.db, "beta", ["src/a/x.ts"], "alpha");
   ok(reserve(reversed.db, "beta", { stacked: [on(beta)] }));
-  expect(why(reserve(reversed.db, "alpha"))).toBe(
-    '#1 "alpha" overlaps #2 "beta": src/a/ (src/a/x.ts)',
-  );
+  expect(reserveFound(reversed.db, "alpha")).toEqual(["alpha ~ beta: src/a/ (src/a/x.ts)"]);
 });
 
-test("every other plan still blocks: a third plan, and a plan stacked on the stacked one", () => {
+test("every other plan is still warned of: a third plan, and a plan stacked on the stacked one", () => {
   const { db } = setup();
   plan(db, "alpha", ["src/a/"]);
   const beta = plan(db, "beta", ["src/a/x.ts"], "alpha");
@@ -120,13 +135,9 @@ test("every other plan still blocks: a third plan, and a plan stacked on the sta
   const stacked = [on(beta), on(delta)];
   ok(reserve(db, "alpha", { stacked }));
   ok(reserve(db, "beta", { stacked }));
-  expect(why(reserve(db, "gamma", { stacked }))).toBe(
-    '#3 "gamma" overlaps #1 "alpha": src/a/y.ts (src/a/)',
-  );
+  expect(reserveFound(db, "gamma", { stacked })).toEqual(["gamma ~ alpha: src/a/y.ts (src/a/)"]);
   // delta skips beta, its own parent, and never alpha, beta's parent.
-  expect(why(reserve(db, "delta", { stacked }))).toBe(
-    '#4 "delta" overlaps #1 "alpha": src/a/x.ts (src/a/)',
-  );
+  expect(reserveFound(db, "delta", { stacked })).toEqual(["delta ~ alpha: src/a/x.ts (src/a/)"]);
 });
 
 test("a parent done but still reserved is skipped while it holds its files; released, the pair ends", () => {
@@ -139,11 +150,11 @@ test("a parent done but still reserved is skipped while it holds its files; rele
   const done = ok(updateTask(db, alpha.id, { status: "done" }, LEAD, 5));
   // Built on alpha's branch, beta shares alpha's files by construction until alpha's pull request merges.
   expect(isStackedPair(beta, done, proved)).toBe(true);
-  expect(ok(reserve(db, "beta", { stacked: [on(beta)] })).lead).not.toBeNull();
-  // A plan that is not stacked on alpha is still held off by it.
-  expect(why(reserve(db, "gamma", { stacked: [on(beta)] }))).toBe(
-    '#3 "gamma" overlaps #1 "alpha" (done, not released: `cc-smart-dev-kit herdr plans` releases it when its pull request merges): src/a/y.ts (src/a/)',
-  );
+  expect(reserveFound(db, "beta", { stacked: [on(beta)] })).toEqual([]);
+  // A plan that is not stacked on alpha is still found overlapping it.
+  expect(reserveFound(db, "gamma", { stacked: [on(beta)] })).toEqual([
+    "gamma ~ alpha: src/a/y.ts (src/a/)",
+  ]);
   const released = ok(releasePlan(db, { project: "p", plan: "alpha", who: LEAD, now: 6 }));
   expect(isStackedPair(beta, released, proved)).toBe(false);
 });
@@ -250,21 +261,22 @@ test("the lead is judged when the overlap is, not only when the stack was set: a
   const taken = taskById(db, beta.id);
   expect([taken.createdBy, taken.stackedOn]).toEqual(["other", "alpha"]);
   expect(isStackedPair(taken, taskById(db, alpha.id), provedSet([on(taken)]))).toBe(false);
-  expect(why(reserve(db, "beta", { who: OTHER, stacked: [on(taken)] }))).toBe(
-    '#2 "beta" overlaps #1 "alpha": src/a/x.ts (src/a/)',
-  );
+  expect(reserveFound(db, "beta", { who: OTHER, stacked: [on(taken)] })).toEqual([
+    "beta ~ alpha: src/a/x.ts (src/a/)",
+  ]);
 });
 
-test("clearing the stack of a held plan that shares its parent's files is refused", () => {
+test("clearing the stack of a held plan that shares its parent's files finds the overlap", () => {
   const { db } = setup();
   plan(db, "alpha", ["src/a/"]);
   const beta = plan(db, "beta", ["src/a/x.ts"], "alpha");
   ok(reserve(db, "alpha"));
   ok(reserve(db, "beta", { stacked: [on(beta)] }));
-  expect(why(updateTask(db, beta.id, { stackedOn: null }, LEAD, 5))).toBe(
-    '#2 "beta" is held, so its files may not overlap another held plan: overlaps #1 "alpha": src/a/x.ts (src/a/)',
-  );
-  expect(taskById(db, beta.id).stackedOn).toBe("alpha");
+  const found: PlanOverlap[] = [];
+  const filesCheck = { ignore: [], caseFold: false, found };
+  ok(updateTask(db, beta.id, { stackedOn: null, filesCheck }, LEAD, 5));
+  expect(overlapWords(found)).toEqual(["beta ~ alpha: src/a/x.ts (src/a/)"]);
+  expect(taskById(db, beta.id).stackedOn).toBeNull();
 });
 
 test("a plan another plan is stacked on is not deleted until the stack is cleared", () => {

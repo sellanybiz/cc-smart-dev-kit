@@ -19,6 +19,7 @@ import {
   leadsPlan,
   livePhaseCount,
   normalizePlanFiles,
+  notesOf,
   type OverlapRule,
   openBlockers,
   openChildren,
@@ -166,11 +167,11 @@ export interface CreateTask {
   blockedBy?: string[];
   /** A plan's file list (D2); only a plan has one. */
   files?: readonly string[];
-  /** What a start into flight is judged by (`refuseFlightOverlap`); see `NO_FILES_CHECK`. */
+  /** What a start into flight is judged by (`flightOverlaps`); left out, it is not judged. */
   filesCheck?: FilesCheck;
 }
 /**
- * What a change to a plan's files is judged by when the plan is held (`refuseHeldOverlap`): the
+ * What a plan is judged by against the held plans (`heldOverlaps`, `flightOverlaps`): the
  * `plans.mergeFiles` list that takes no part in an overlap, the `plans.appendOnly` folders where
  * only the same file overlaps, and whether paths compare without case (`filesOverlap`).
  */
@@ -178,16 +179,30 @@ export interface FilesCheck extends OverlapRule {
   ignore: readonly string[];
   caseFold: boolean;
   /**
-   * Why `ignore` may be short (`resolvePlanFiles`): a refusal for an overlap says it, since a
-   * merge file that could not be read may be what the overlap is about.
-   */
-  reason?: string | null;
-  /**
    * The proved stacks, each a pair of stacked plan and parent (`provedStacks`), read before the
    * lock from the rows as this write leaves them. Only these pairs are skipped (`isStackedPair`);
    * left out, no stack is proved and every stacked pair is judged as rivals.
    */
   stacked?: readonly StackPair[];
+  /** Where the write puts each overlap it finds (`PlanOverlap`); left out, none is collected. */
+  found?: PlanOverlap[];
+}
+
+/**
+ * Two plans whose files meet (D2), found where a write judges a plan against the held plans: a
+ * start into flight, a held plan's new list or stack, a reservation. An overlap never refuses:
+ * the caller warns and notes it after the write (`warnOverlaps`), since naming the generated
+ * files among the shared paths needs git, and no git runs under the write lock.
+ */
+export interface PlanOverlap {
+  /** The plan the write judged. */
+  plan: WorkTask;
+  /** The held plan it meets. */
+  other: WorkTask;
+  /** Where the two lists touch, `path` from `plan`'s list (`filesOverlap`); empty when `unlisted` is set. */
+  overlaps: FileOverlap[];
+  /** The one of the two that lists no file, so nothing can be compared; null for an overlap of files. */
+  unlisted: WorkTask | null;
 }
 export interface UpdateTask {
   agent?: string | undefined;
@@ -210,10 +225,11 @@ export interface UpdateTask {
    * never itself, a plan that is not there, or one that would close a loop.
    */
   stackedOn?: string | null;
-  /** How a new list on a held plan is judged; without it nothing is ignored and case counts. */
+  /** How a new list on a held plan, or a start into flight, is judged; left out, it is not judged. */
   filesCheck?: FilesCheck;
 }
-function label(task: WorkTask): string {
+/** A task as the task tools' answers name it: `#3 "Subject"`. */
+export function label(task: WorkTask): string {
   return `#${task.number} "${task.subject}"`;
 }
 function subjectOf(subject: string): string {
@@ -366,81 +382,37 @@ function storeStack(db: WorkDb, task: WorkTask, slug: string | null, who: Who): 
   db.sqlite.query("UPDATE tasks SET stacked_on=? WHERE id=?").run(slug, task.id);
 }
 
-/** One plan's overlaps in words, as every refusal says them: `#3 "Plan": src/a.ts, src/b/ (src/b/x.ts)`. */
-function overlapText(held: WorkTask, overlaps: readonly FileOverlap[]): string {
-  const shown = [
-    ...new Set(overlaps.map((o) => (o.path === o.other ? o.path : `${o.path} (${o.other})`))),
-  ];
-  // A plan closed but still reserved holds its files until its pull request settles.
-  const settling =
-    held.status === "done"
-      ? ` (done, not released: \`${COMMAND} herdr plans\` releases it when its pull request merges)`
-      : "";
-  return `${label(held)}${settling}: ${shown.join(", ")}`;
-}
-
-/** The refusal's last words when the merge file list could not be read in full (`FilesCheck.reason`). */
-function mergeFilesNote(check: FilesCheck): string {
-  return check.reason
-    ? `. plans.mergeFiles was not read in full, so a merge file may count: ${check.reason}`
-    : "";
-}
-
-/** The held plans among `held` that `files` overlaps, each with where; empty when none does. */
+/** The held plans among `held` that `plan`'s `files` overlap, each with where; empty when none does. */
 function overlapsWith(
+  plan: WorkTask,
   held: readonly HeldPlan[],
   files: readonly string[],
   check: OverlapRule,
-): { plan: WorkTask; why: HeldPlan["why"]; overlaps: FileOverlap[] }[] {
+): PlanOverlap[] {
   return held
-    .map(({ plan, why, files: theirs }) => ({
+    .map(({ plan: other, files: theirs }) => ({
       plan,
-      why,
+      other,
       overlaps: filesOverlap(files, theirs, check),
+      unlisted: null,
     }))
     .filter((one) => one.overlaps.length > 0);
 }
 
 /**
- * A held plan that lists no file and whose branch changed none holds nothing a check can find, so
- * nothing can be shown clear of it: unknown is never clear (D5). Throws, naming the plan and the fix.
- */
-function refuseUnlisted(held: readonly HeldPlan[]): void {
-  const unlisted = held.filter((h) => h.files.length === 0);
-  if (unlisted.length > 0) throw new Error(unlistedWords(unlisted.map((h) => h.plan)));
-}
-
-/** The refusal's words for held plans with no file list: each is named with the call that fixes it. */
-function unlistedWords(plans: readonly WorkTask[]): string {
-  return plans
-    .map(
-      (plan) =>
-        `${label(plan)} is held with no file list: set its files first (${TASK_TOOL.update} on #${plan.number} with files), or finish, park or drop it`,
-    )
-    .join("; ");
-}
-
-/**
- * A held plan's new list may not reach another held plan (D4): the same definition
+ * A held plan's new list or stack may reach another held plan (D4): the same definition
  * `reservePlan` uses, over stored lists only, in the caller's transaction. A plan that is not
- * held takes any list: `reservePlan` judges it when it is reserved.
+ * held takes any list unjudged: `reservePlan` judges it when it is reserved.
  */
-function refuseHeldOverlap(db: WorkDb, task: WorkTask, who: Who, check: FilesCheck): void {
+function heldOverlaps(db: WorkDb, task: WorkTask, who: Who, check: FilesCheck): void {
+  if (check.found === undefined) return;
   const held = heldPlansIn(allTasks(db, task.project), who);
   if (!held.some((h) => h.plan.id === task.id)) return;
   const current = taskById(db, task.id);
-  const clashes = overlapsWith(rivalsOf(held, current, provedOf(check)), current.files, check);
-  if (clashes.length > 0)
-    throw new Error(
-      `${label(task)} is held, so its files may not overlap another held plan: overlaps ${clashes.map((c) => overlapText(c.plan, c.overlaps)).join("; ")}${mergeFilesNote(check)}`,
-    );
+  check.found.push(
+    ...overlapsWith(current, rivalsOf(held, current, provedOf(check)), current.files, check),
+  );
 }
-
-/**
- * The check a caller that read none is judged by: nothing ignored, case compared. A caller that
- * has the checkout reads the real one before the lock (`planFilesCheck`) and passes it in.
- */
-const NO_FILES_CHECK: FilesCheck = { ignore: [], caseFold: false };
 
 /** The stacked pairs a check proved (`FilesCheck.stacked`); none when it proved none. */
 function provedOf(check: FilesCheck): ReadonlySet<string> {
@@ -448,44 +420,25 @@ function provedOf(check: FilesCheck): ReadonlySet<string> {
 }
 
 /**
- * The way out of an overlap with a held plan, by why it is held: a reserved plan holds its files
- * until its pull request merges or closes; a plan in flight holds them until it is done or parked,
- * and one whose session is gone is taken, parked or dropped.
- */
-function wayOut(held: { plan: WorkTask; why: HeldPlan["why"] }): string {
-  return held.why === "reserved"
-    ? `${label(held.plan)} is reserved: wait until its pull request merges or closes`
-    : `${label(held.plan)} is running: wait until it is done or parked; if its session is gone, take it (${TASK_TOOL.take}), or park or drop it`;
-}
-
-/**
- * A plan going into flight may not reach a plan held for someone else (D4, the solo first start):
+ * A plan going into flight beside the plans held for someone else (D4, the solo first start):
  * `reservePlan` judges a plan when it is reserved, and a session that starts a plan without
- * reserving it would otherwise slip past. `plan` is the plan row that goes into flight, whichever
+ * reserving it would otherwise go unseen. `plan` is the plan row that goes into flight, whichever
  * task of it started (`enteringPlan`). Runs in the start's own transaction, after the status and
- * any new file list are written, over stored lists. With no other plan held nothing changes, so a
- * session that never hands out a plan sees no refusal. A plan with no list is refused while a
- * *reserved* plan is held (it cannot be shown clear of it); beside another session's plan in
- * flight alone it starts as before. The plan's own reservation never counts against it.
+ * any new file list are written, over stored lists. A plan with no list beside a *reserved* plan
+ * cannot be compared with it, and that is collected too; beside another session's plan in flight
+ * alone it is not. The plan's own reservation never counts against it.
  */
-function refuseFlightOverlap(db: WorkDb, plan: WorkTask, who: Who, check: FilesCheck): void {
+function flightOverlaps(db: WorkDb, plan: WorkTask, who: Who, check: FilesCheck): void {
+  if (check.found === undefined) return;
   const row = taskById(db, plan.id);
   const others = rivalsOf(heldPlansIn(allTasks(db, plan.project), who), row, provedOf(check));
-  if (others.length === 0) return;
-  const files = row.files;
-  if (files.length === 0) {
-    const reserved = others.filter((h) => h.why === "reserved");
-    if (reserved.length > 0)
-      throw new Error(
-        `${label(plan)} has no file list, so it cannot be shown clear of ${reserved.map((h) => label(h.plan)).join(", ")}: set its files first (${TASK_TOOL.update} with files)`,
-      );
+  if (row.files.length > 0) {
+    check.found.push(...overlapsWith(row, others, row.files, check));
     return;
   }
-  const clashes = overlapsWith(others, files, check);
-  if (clashes.length > 0)
-    throw new Error(
-      `${label(plan)} cannot start, since it overlaps ${clashes.map((c) => overlapText(c.plan, c.overlaps)).join("; ")}. Two plans that share a file never run at once: ${clashes.map(wayOut).join("; ")}; or change this plan's files (${TASK_TOOL.update} with files)${mergeFilesNote(check)}`,
-    );
+  for (const held of others)
+    if (held.why === "reserved")
+      check.found.push({ plan: row, other: held.plan, overlaps: [], unlisted: row });
 }
 
 /**
@@ -516,7 +469,7 @@ function planNotInFlight(db: WorkDb, project: string, plan: string): WorkTask | 
 /**
  * Internal operations run only within writeWork, also used by the atomic importer. `reason`
  * says why the kit made the task itself (an import), for its history; such a write is never
- * judged as a plan's start (`refuseFlightOverlap`).
+ * judged as a plan's start (`flightOverlaps`).
  */
 export function insertTask(
   db: WorkDb,
@@ -587,7 +540,8 @@ export function insertTask(
   const task = taskById(db, id);
   if (status === "in_progress") unblockedValid(db, task);
   const joining = starts && task.kind === "plan" ? task : entering;
-  if (joining !== null) refuseFlightOverlap(db, joining, who, input.filesCheck ?? NO_FILES_CHECK);
+  if (joining !== null && input.filesCheck !== undefined)
+    flightOverlaps(db, joining, who, input.filesCheck);
   const initial: Record<string, unknown> = {
     kind: task.kind,
     plan: task.plan,
@@ -683,14 +637,14 @@ export function applyUpdate(
     );
   // A plan that is dropped is released: a drop frees what it held (D4).
   if (status === "dropped" && task.kind === "plan") clearLead(db, id);
-  const check = change.filesCheck ?? NO_FILES_CHECK;
+  const check = change.filesCheck;
   if (change.files !== undefined) storeFiles(db, task, change.files);
   if (change.stackedOn !== undefined) storeStack(db, task, change.stackedOn, who);
   // A new list, or a stack set or cleared, may make a held plan reach another held plan.
-  if (change.files !== undefined || change.stackedOn !== undefined)
-    refuseHeldOverlap(db, task, who, check);
+  if (check !== undefined && (change.files !== undefined || change.stackedOn !== undefined))
+    heldOverlaps(db, task, who, check);
   // A plan entering flight (a first start, or a reopen) is judged by its list as stored just now.
-  if (entering !== null) refuseFlightOverlap(db, entering, who, check);
+  if (check !== undefined && entering !== null) flightOverlaps(db, entering, who, check);
   const changed = taskById(db, id);
   recordChange(db, before, changed, who, now, null);
   return changed;
@@ -704,6 +658,19 @@ export function insertNote(
   now: number,
   reason: string | null = null,
 ) {
+  const note = saveNote(db, id, text, who, now, reason);
+  db.sqlite.query("UPDATE tasks SET updated_at=? WHERE id=?").run(now, id);
+  return note;
+}
+/** The note row and its history entry, leaving the task's `updated_at` where it was. */
+function saveNote(
+  db: WorkDb,
+  id: string,
+  text: string,
+  who: Who,
+  now: number,
+  reason: string | null,
+) {
   const task = taskById(db, id);
   if (!text.trim() || text.length > NOTE_LIMIT)
     throw new Error(`note must be 1–${NOTE_LIMIT} characters`);
@@ -712,7 +679,6 @@ export function insertNote(
       "INSERT INTO task_notes(task_id,text,session_id,at) VALUES (?,?,?,?) RETURNING id",
     )
     .get(id, text, who.sessionId, now);
-  db.sqlite.query("UPDATE tasks SET updated_at=? WHERE id=?").run(now, id);
   const preview = text.length > NOTE_PREVIEW ? `${text.slice(0, NOTE_PREVIEW)}…` : text;
   recordEvent(db, task, "noted", { note: [null, preview] }, who, now, reason);
   return {
@@ -725,6 +691,40 @@ export function insertNote(
 }
 export function addNote(db: WorkDb, id: string, text: string, who: Who, now: number) {
   return writeWork(db, () => insertNote(db, id, text, who, now));
+}
+
+/** A note for several tasks, saved once on each (`addNotesOnce`). */
+export interface NoteOnce {
+  taskIds: readonly string[];
+  /** The note's opening words: a task that holds a note starting with them gets no second one. */
+  head: string;
+  /** The whole note; it starts with `head`. */
+  text: string;
+}
+
+/**
+ * Saves each note on each of its tasks that holds none with its head yet, in one transaction.
+ * Answers how many it saved. The tasks' `updated_at` stays: a note may land in another lead's
+ * plan, and that lead's release, its launch claim (`swapPlanAgent`) and a hand-out's grace all
+ * key on `updated_at`, so moving it would refuse or delay them for a write that changed nothing
+ * they judge.
+ */
+export function addNotesOnce(
+  db: WorkDb,
+  notes: readonly NoteOnce[],
+  who: Who,
+  now: number,
+): Result<number> {
+  return writeWork(db, () => {
+    let saved = 0;
+    for (const note of notes)
+      for (const id of note.taskIds) {
+        if (notesOf(db, id).some((one) => one.text.startsWith(note.head))) continue;
+        saveNote(db, id, note.text, who, now, null);
+        saved += 1;
+      }
+    return saved;
+  });
 }
 /** Deletes a mistaken task. Its history stays, and its last entry keeps the task as it was. */
 export function deleteTask(db: WorkDb, id: string, who: Who, now: number) {
@@ -1063,8 +1063,6 @@ export interface ReservePlan {
    * `child` plan.
    */
   holder: "self" | "child";
-  /** Why `ignore` may be short (`planFilesCheck().reason`); an overlap refusal says it. */
-  reason?: string | null;
   /** `plans.mergeFiles` as committed (`resolvePlanFiles`): paths every plan touches, left out of the overlap check. */
   ignore: readonly string[];
   /** `core.ignorecase`: compare paths without case, the ignore list too. */
@@ -1078,16 +1076,20 @@ export interface ReservePlan {
    * transaction. Left out, every stacked pair is judged as rivals.
    */
   stacked?: readonly StackPair[];
+  /** Where a reservation that is made puts each overlap with a held plan (`PlanOverlap`); left out, none is collected. */
+  found?: PlanOverlap[];
   now: number;
 }
 
 /**
  * Reserves a plan for the caller as its lead (D4), atomically: one `writeWork` transaction reads
  * the store again, refuses, or writes the `lead_*` columns. It refuses unless the plan is the
- * caller's own, open and pending, unreserved, has a file list, has no open blocker, and its files
- * (without `ignore`) overlap no held plan (`heldPlansIn`). Each refusal names its reason, and the
- * plan in the way: `overlaps #3 "Plan": src/a.ts`. Two reservations at once cannot both pass:
- * the second reads the first's write. The lead reserves its own plan the same way, then starts it.
+ * caller's own, open and pending, unreserved, has a file list (so later plans can be compared
+ * with it), and has no open blocker; each refusal names its reason. An overlap with a held plan
+ * (`heldPlansIn`, without `ignore`), or a held plan with no file list, never refuses: each goes
+ * into `found` for the caller to warn about. Two reservations at once both pass, and the second
+ * reads the first's write, so it finds their overlap. The lead reserves its own plan the same
+ * way, then starts it.
  */
 export function reservePlan(db: WorkDb, input: ReservePlan): Result<WorkTask> {
   return writeWork(db, () => {
@@ -1120,12 +1122,12 @@ export function reservePlan(db: WorkDb, input: ReservePlan): Result<WorkTask> {
       plan,
       provedSet(input.stacked),
     );
-    refuseUnlisted(others);
-    const clashes = overlapsWith(others, plan.files, input);
-    if (clashes.length > 0)
-      throw new Error(
-        `${label(plan)} overlaps ${clashes.map((c) => overlapText(c.plan, c.overlaps)).join("; ")}${mergeFilesNote(input)}`,
-      );
+    const found: PlanOverlap[] = [
+      ...others
+        .filter((h) => h.files.length === 0)
+        .map((h) => ({ plan, other: h.plan, overlaps: [], unlisted: h.plan })),
+      ...overlapsWith(plan, others, plan.files, input),
+    ];
     const before = shape(db, plan);
     db.sqlite
       .query(
@@ -1142,6 +1144,7 @@ export function reservePlan(db: WorkDb, input: ReservePlan): Result<WorkTask> {
       );
     const reserved = taskById(db, plan.id);
     recordChange(db, before, reserved, who, input.now, "plan reserved");
+    input.found?.push(...found);
     return reserved;
   });
 }

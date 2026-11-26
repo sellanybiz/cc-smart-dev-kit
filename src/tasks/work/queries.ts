@@ -445,7 +445,7 @@ export function parentHolds(parent: WorkTask): boolean {
  * The session that leads a plan, as a caller: the lead its reservation names, else the session
  * that owns its task (its maker, which a take moves). Null when the plan names neither.
  */
-function planLead(plan: WorkTask): Who | null {
+export function planLead(plan: WorkTask): Who | null {
   if (plan.lead !== null)
     return plan.lead.sessionId === null && plan.lead.pid === null
       ? null
@@ -527,7 +527,7 @@ export function planFiles(db: WorkDb, plan: string | WorkTask): string[] {
     .map((row) => row.path);
 }
 
-/** A plan nothing else may overlap (D4): why it is held, whose it is, and the files it holds. */
+/** A plan another plan is judged against (D4): why it is held, whose it is, and the files it holds. */
 export interface HeldPlan {
   plan: WorkTask;
   /**

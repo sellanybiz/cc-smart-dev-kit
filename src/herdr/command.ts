@@ -1078,6 +1078,7 @@ async function startChild(
     // A stacked plan's stack counts only when the commit it starts on holds its parent's work.
     const prepared = prepareStart(planWorld, slug, base?.commit);
     if (!prepared.ok) return refuse(ctx, prepared.why, prepared.fix);
+    for (const warning of prepared.warnings) ctx.out.line("warn", warning);
     handout = prepared;
     if (prepared.reserved)
       run.giveBack = releaseAfterFailedStart(

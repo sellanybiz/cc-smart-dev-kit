@@ -20,7 +20,7 @@ import type { Env } from "../hooks/run";
 import { locateCheckout } from "../project/resolve";
 import { shellWord } from "../shell/quote";
 import { taskContext, taskWriteRefusal } from "../tasks/context";
-import { planFilesCheck } from "../tasks/files-check";
+import { type OverlapCheck, planFilesCheck, warnOverlaps } from "../tasks/files-check";
 import { branchTip, judgeStacks, provedPairs, type StackJudgment } from "../tasks/stack-proof";
 import { openWorkDb, type WorkDb, workDbFile } from "../tasks/work/db";
 import { CLAIM_PROCESS, callerOf } from "../tasks/work/identity";
@@ -40,7 +40,7 @@ import {
   rivalsOf,
   type StackPair,
 } from "../tasks/work/queries";
-import { type FilesCheck, releasePlan, reservePlan, swapPlanAgent } from "../tasks/work/store";
+import { type PlanOverlap, releasePlan, reservePlan, swapPlanAgent } from "../tasks/work/store";
 import type { ClaimProcess, Who, WorkTask } from "../tasks/work/types";
 import { baseBranch } from "../worktrees/command";
 import { inDefaultFolder, worktreePath } from "../worktrees/paths";
@@ -81,7 +81,7 @@ export type PrState = PullRequestState;
 export type PrReader = (repo: string, branch: string, head: string, env: Env) => PrState;
 
 /** What `herdr plans` says of one plan. Store states keep their names; the live gates add the rest. */
-export type PlanState = LeadPlanState | "released" | "stale" | "blocked" | "overlaps";
+export type PlanState = LeadPlanState | "released" | "stale" | "blocked";
 
 export interface PlanLine {
   number: number;
@@ -122,8 +122,11 @@ export interface PlansWorld {
    * worktree outside the default folder is a child's only when the record says so.
    */
   launched: (worktree: string) => boolean;
-  /** `plans.mergeFiles`, `plans.appendOnly` and `core.ignorecase` (`planFilesCheck`), read before any write lock. */
-  check: FilesCheck;
+  /**
+   * `plans.mergeFiles`, `plans.appendOnly` and `core.ignorecase` (`planFilesCheck`), read before
+   * any write lock, with what a reservation's overlap warning reads after it (`warnOverlaps`).
+   */
+  check: OverlapCheck;
   /** The clock, read fresh each time: a store write is stamped when it happens, not when this opened. */
   now: () => number;
 }
@@ -662,34 +665,33 @@ function readiness(
   if (waiting.length) return line("waiting", `waiting on ${waiting.join(", ")}`);
   // The plan it is stacked on, or that is stacked on it, is not judged once proved (`rivalsOf`).
   const rivals = rivalsOf(held, plan, proved);
-  // Unknown is never clear (D5): a held plan with no list and no branch diff shares nothing a check can find.
+  // An overlap, known or not, never holds a plan back: the line names it, and the reservation warns.
   const unlisted = rivals.filter((other) => other.files.length === 0);
+  const shared: string[] = [];
+  const fixes = unlisted.map(
+    (other) =>
+      `task_update #${other.plan.number} with files: the paths and folders it changes, so overlaps with it can be named`,
+  );
   if (unlisted.length > 0)
-    return line(
-      "blocked",
-      `blocked: ${unlisted.map((other) => label(other.plan)).join(", ")} ${unlisted.length > 1 ? "are" : "is"} held with no file list and no branch diff, so no overlap can be ruled out`,
-      unlisted
-        .map(
-          (other) =>
-            `task_update #${other.plan.number} with files: the paths and folders it changes, or finish, park or drop it`,
-        )
-        .join("; "),
+    shared.push(
+      `${unlisted.map((other) => label(other.plan)).join(", ")} ${unlisted.length > 1 ? "are" : "is"} held with no file list and no branch diff, so no overlap can be ruled out`,
     );
   const clashes: string[] = [];
-  let parent: WorkTask | null = null;
   for (const other of rivals) {
     const touched = filesOverlap(plan.files, other.files, world.check);
     if (touched.length === 0) continue;
     const files = [...new Set(touched.map((t) => t.path))].join(", ");
     const closed = isOpen(other.plan) ? "" : " (finished: held until its pull request settles)";
     clashes.push(`${label(other.plan)}${closed}: ${files}`);
-    if (plan.stackedOn !== null && other.plan.plan === plan.stackedOn) parent = other.plan;
+    if (plan.stackedOn !== null && other.plan.plan === plan.stackedOn)
+      fixes.push(unprovedStackFix(plan, other.plan, stacks.get(plan.id), byId));
   }
-  if (clashes.length)
+  if (clashes.length > 0) shared.push(`overlaps ${clashes.join("; ")}`);
+  if (shared.length > 0)
     return line(
-      "overlaps",
-      `overlaps ${clashes.join("; ")}`,
-      parent === null ? null : unprovedStackFix(plan, parent, stacks.get(plan.id), byId),
+      "ready",
+      `ready: nothing blocks it; ${shared.join("; ")} (an overlap warns and never holds a plan back)`,
+      fixes.length > 0 ? fixes.join("; ") : null,
     );
   return line("ready", "ready: nothing blocks it and no held plan shares its files");
 }
@@ -745,7 +747,7 @@ function summary(lines: readonly PlanLine[]): string {
     [count("own"), "built here"],
     [count("child-gone"), "child gone"],
     [count("merging"), "closing"],
-    [count("waiting") + count("overlaps"), "waiting"],
+    [count("waiting"), "waiting"],
     [count("blocked") + count("no-files") + count("stale"), "need you"],
     [count("ready"), "ready"],
   ] as const;
@@ -773,6 +775,8 @@ export type PlanStart =
        * first start, where the reservation is the claim.
        */
       claim: { marker: string; previous: string | null } | null;
+      /** The reservation's overlap lines (`warnOverlaps`), for the caller to print; also noted on both plans. */
+      warnings: string[];
     };
 
 type Refusal = Extract<PlanStart, { ok: false }>;
@@ -831,6 +835,8 @@ function reserveReady(
       `Plan "${slug}" is not ready: ${line?.text ?? "it is not a queued plan of this session"}.`,
       line?.fix ?? undefined,
     );
+  const found: PlanOverlap[] = [];
+  const now = world.now();
   const reserved = reservePlan(world.db, {
     project: world.project,
     plan: slug,
@@ -841,7 +847,8 @@ function reserveReady(
     appendOnly: world.check.appendOnly ?? [],
     extraFiles: judged.extraFiles,
     stacked: judged.stacked,
-    now: world.now(),
+    found,
+    now,
   });
   // A refusal here is a lost race: the plan moved between the gates and the transaction.
   if (!reserved.ok) return refuse(reserved.why, `${COMMAND} herdr plans shows where it stands`);
@@ -856,6 +863,7 @@ function reserveReady(
     resume: false,
     recorded: null,
     claim: null,
+    warnings: warnOverlaps(world.db, found, world.check, world.who, now),
   };
 }
 
@@ -1013,6 +1021,7 @@ export function prepareStart(world: PlansWorld, ref: string, start?: string): Pl
       resume: stored.state === "child-gone",
       recorded,
       claim: { marker, previous: plan.agent },
+      warnings: [],
     };
   }
   return reserveReady(world, plan, slug, "child", start);
@@ -1115,7 +1124,7 @@ export function markOf(state: PlanState): "fail" | "info" | "ok" | "warn" {
 
 /** States that can still change by themselves (a merge, a child's finish): a `--wait` has something to wait for. */
 function mayChange(line: PlanLine): boolean {
-  return ["with-child", "merging", "waiting", "overlaps"].includes(line.state);
+  return ["with-child", "merging", "waiting"].includes(line.state);
 }
 
 /** What changed between two judgments of the same plans: a plan turned ready, a pull request merged, a reservation released. */
@@ -1152,7 +1161,7 @@ export interface PlansEnv {
   /** A branch's pull request; tests fake gh. */
   pr?: PrReader;
   /** `plans.mergeFiles`, `plans.appendOnly` and case; tests fake the committed read. */
-  filesCheck?: (cwd: string) => FilesCheck;
+  filesCheck?: (cwd: string) => OverlapCheck;
 }
 
 /** The pane a plan's `agent` names (`herdr:<core>/<address>`), read through hc. */
@@ -1255,11 +1264,7 @@ export function openPlansWorld(
         pane: paneProbe(r, core),
         labelled: labelledProbe(r),
         launched: (worktree) => launchedHere(ctx.paths.stateDir, repo, worktree),
-        check: {
-          ignore: check.ignore,
-          caseFold: check.caseFold,
-          ...(check.appendOnly === undefined ? {} : { appendOnly: check.appendOnly }),
-        },
+        check,
         now: ctx.now,
       },
     };
@@ -1324,11 +1329,13 @@ export async function runPlans(
     if (args.reserve !== undefined) {
       const reserved = prepareReserve(opened.world, args.reserve);
       if (!reserved.ok) ctx.out.line("fail", reserved.why, { fix: reserved.fix });
-      else
+      else {
         ctx.out.line(
           "ok",
           `Reserved plan #${reserved.plan.number} ${reserved.plan.plan ?? reserved.plan.subject} for this session: start its first phase as usual.`,
         );
+        for (const warning of reserved.warnings) ctx.out.line("warn", warning);
+      }
       return reserved.ok ? 0 : 1;
     }
     const judge = () => judgePlans(opened.world);

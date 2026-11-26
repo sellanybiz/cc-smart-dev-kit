@@ -11,7 +11,7 @@ import { taskContext } from "../tasks/context";
 import { createTaskOps } from "../tasks/ops";
 import { openWorkDb, workDbFile } from "../tasks/work/db";
 import { classifyLeadPlans } from "../tasks/work/lead-plans";
-import { allTasks } from "../tasks/work/queries";
+import { allTasks, notesOf } from "../tasks/work/queries";
 import { createTask, reservePlan, takeTasks, updateTask } from "../tasks/work/store";
 import type { ClaimProcess, Who, WorkTask } from "../tasks/work/types";
 import { cleanGitEnv, git, tempDir } from "../testing/temp";
@@ -1076,7 +1076,13 @@ function planWorld() {
     if (!done.ok) throw new Error(done.why);
   };
   const noRun = () => expect(w.calls.some((c) => c.args[0] === "run")).toBe(false);
-  return { ...w, db, project, prs, plan, row, change, noRun };
+  /** The opening words of each `Overlap:` note on a plan: the two plans and what they share. */
+  const overlapNotes = (slug: string) =>
+    notesOf(db, row(slug))
+      .map((note) => note.text)
+      .filter((text) => text.startsWith("Overlap:"))
+      .map((text) => text.split(". ")[0]);
+  return { ...w, db, project, prs, plan, row, change, noRun, overlapNotes };
 }
 
 test("--plan refuses what it cannot hand out, each with its words, and launches nothing", async () => {
@@ -1165,7 +1171,7 @@ test("the plan is reserved before the launch, bound after it, and its brief carr
   expect(brief).not.toContain("Your task:");
 });
 
-test("two hand-outs that share files: the second is refused by the reservation, not launched", async () => {
+test("two hand-outs that share files: both launch, the second warns, and each plan's first note names the overlap", async () => {
   const p = planWorld();
   p.plan("alpha", ["src/shared/"]);
   p.plan("beta", ["src/shared/inner.ts"]);
@@ -1174,10 +1180,14 @@ test("two hand-outs that share files: the second is refused by the reservation, 
   p.lines.length = 0;
   // The first child is reserved; the pane list has to know the first name, as hc would.
   p.setList(["t2"]);
-  expect(await runHerdr([...planLaunch, "--plan", "beta", "--", "work"], p.ctx)).toBe(1);
-  expect(p.lines.join("\n")).toContain("overlaps #1 alpha");
-  p.noRun();
-  expect(p.row("beta").lead).toBeNull();
+  expect(await runHerdr([...planLaunch, "--plan", "beta", "--", "work"], p.ctx)).toBe(0);
+  expect(p.calls.some((c) => c.args[0] === "run")).toBe(true);
+  expect(p.row("beta").lead).not.toBeNull();
+  const shared = ['Overlap: #1 "alpha" and #2 "beta" share src/shared/ (src/shared/inner.ts)'];
+  expect(p.lines.filter((line) => line.includes("Overlap: "))).toEqual([
+    expect.stringContaining(`${shared[0]}. Leads:`),
+  ]);
+  expect([p.overlapNotes("alpha"), p.overlapNotes("beta")]).toEqual([shared, shared]);
 });
 
 test("a failed launch gives the reservation back, whichever way it failed", async () => {
@@ -1927,21 +1937,21 @@ test("a plan the lead reserved for itself keeps its files held in flight, and af
   p.plan("alpha", ["src/shared/"]);
   p.plan("beta", ["src/shared/inner.ts"]);
   expect(await runHerdr([...RESERVE, "alpha"], p.ctx)).toBe(0);
-  const hand = async () => {
+  const plans = async () => {
     p.lines.length = 0;
-    expect(await runHerdr([...planLaunch, "--plan", "beta", "--", "work"], p.ctx)).toBe(1);
-    p.noRun();
-    expect(p.row("beta").lead).toBeNull();
+    expect(await runHerdr(["plans"], p.ctx)).toBe(0);
     return p.lines.join("\n");
   };
-  expect(await hand()).toContain('Plan "beta" is not ready: overlaps #1 alpha: src/shared');
+  const ready = "#2 beta: ready: nothing blocks it; overlaps #1 alpha";
+  expect(await plans()).toContain(`${ready}: src/shared/inner.ts`);
   p.change("alpha", { status: "in_progress" });
-  expect(await hand()).toContain('Plan "beta" is not ready: overlaps #1 alpha: src/shared');
+  expect(await plans()).toContain(`${ready}: src/shared/inner.ts`);
   p.change("alpha", { status: "done" });
-  expect(await hand()).toContain(
-    "overlaps #1 alpha (finished: held until its pull request settles): src/shared",
+  expect(await plans()).toContain(
+    `${ready} (finished: held until its pull request settles): src/shared/inner.ts`,
   );
   expect(p.row("alpha").lead).toMatchObject({ holder: "self" });
+  p.noRun();
 });
 
 test("plans --reserve refuses a plan child, and a default branch that can only be guessed", async () => {
@@ -2060,7 +2070,7 @@ test("a requires the kit does not meet refuses every plan command and a task sta
   expect(allTasks(p.db, p.project)).toEqual(before);
 });
 
-test("plans --reserve reads the same gates as a hand-out: a blocked, a file-less or an overlapping plan is not reserved", async () => {
+test("plans --reserve reads the same gates as a hand-out: a blocked or a file-less plan is not reserved, an overlapping one is, with the warning", async () => {
   const p = planWorld();
   const first = p.plan("first", ["src/f/"]);
   p.plan("waits", ["src/w/"], { blockedBy: [first.id] });
@@ -2070,7 +2080,6 @@ test("plans --reserve reads the same gates as a hand-out: a blocked, a file-less
   const refusals: [string, string][] = [
     ["waits", 'Plan "waits" is not ready: waiting on #1 first'],
     ["nofiles", "has no file list"],
-    ["clash", 'Plan "clash" is not ready: overlaps #1 first: src/f'],
   ];
   for (const [slug, why] of refusals) {
     p.lines.length = 0;
@@ -2078,6 +2087,15 @@ test("plans --reserve reads the same gates as a hand-out: a blocked, a file-less
     expect(p.lines.join("\n")).toContain(why);
     expect(p.row(slug).lead).toBeNull();
   }
+  p.lines.length = 0;
+  expect(await runHerdr([...RESERVE, "clash"], p.ctx)).toBe(0);
+  expect(p.row("clash").lead).toMatchObject({ holder: "self" });
+  const text = p.lines.join("\n");
+  expect(text).toContain("Reserved plan #4 clash for this session");
+  expect(text).toContain('Overlap: #1 "first" and #4 "clash" share src/f/ (src/f/inner.ts).');
+  expect(p.overlapNotes("first")).toEqual([
+    'Overlap: #1 "first" and #4 "clash" share src/f/ (src/f/inner.ts)',
+  ]);
 });
 
 const followLaunch = [...planLaunch, "--followup"];
@@ -2509,18 +2527,15 @@ test("a stacked plan started with no --base starts on its parent's branch, besid
   expect(p.row("beta").lead).not.toBeNull();
 });
 
-test("a stacked plan whose start lacks its parent's work is judged against it: --base main is refused", async () => {
+test("a stacked plan whose start lacks its parent's work is judged against it: --base main launches, noting the overlap", async () => {
   const p = planWorld();
   stackedWorld(p);
   expect(
     await runHerdr([...planLaunch, "--plan", "beta", "--base", "main", "--", "go"], p.ctx),
-  ).toBe(1);
-  expect(p.lines.join("\n")).toContain('Plan "beta" is not ready: overlaps #1 alpha: src/a/x.ts.');
-  expect(p.lines.join("\n")).toContain(
-    "the stack on alpha counts only when this plan is built on alpha's work: cc-smart-dev-kit herdr start --plan beta starts it on alpha-branch when --base is left out; a plan built here rebuilds its branch on alpha-branch",
-  );
-  p.noRun();
-  expect(p.row("beta").lead).toBeNull();
+  ).toBe(0);
+  expect(p.row("beta").lead).not.toBeNull();
+  const shared = ['Overlap: #1 "alpha" and #2 "beta" share src/a/ (src/a/x.ts)'];
+  expect([p.overlapNotes("alpha"), p.overlapNotes("beta")]).toEqual([shared, shared]);
 });
 
 test("a stacked plan whose parent records no branch is refused with no --base, naming the fix", async () => {

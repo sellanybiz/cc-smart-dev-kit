@@ -23,7 +23,7 @@ import {
   updateDeployTask,
 } from "./deploy/files";
 import { type DeployTask, isDeployTaskId } from "./deploy/format";
-import { planFilesCheck } from "./files-check";
+import { type OverlapCheck, planFilesCheck, warnOverlaps } from "./files-check";
 import {
   planInTheWay,
   planNote,
@@ -70,8 +70,10 @@ import {
   type FilesCheck,
   insertNote,
   insertTask,
+  label,
   layPhase,
   type PhaseCap,
+  type PlanOverlap,
   planTask,
   reclaimResumed,
   refuseOverCap,
@@ -206,17 +208,15 @@ export interface TaskOpsOptions {
    */
   refuseBlockingDrop?: boolean;
   /**
-   * How a new file list on a held plan is compared (`plans.mergeFiles` and case). Read from git
-   * before the write lock; tests pass their own. Default: `planFilesCheck` of the caller's folder.
+   * How a plan is compared with the held plans (`plans.mergeFiles` and case) when it starts or a
+   * held plan's list changes, and what the warning after the write reads. Read from git before
+   * the write lock; tests pass their own. Default: `planFilesCheck` of the caller's folder.
    */
-  filesCheck?: (cwd: string) => FilesCheck;
+  filesCheck?: (cwd: string) => OverlapCheck;
 }
 function value<T>(result: Result<T>): T {
   if (!result.ok) throw new Error(result.why);
   return result.value;
-}
-function label(task: WorkTask): string {
-  return `#${task.number} "${task.subject}"`;
 }
 /**
  * What a close adds to its answer: the caller's own work it just made startable (`freedBy`), in
@@ -397,19 +397,35 @@ export function createTaskOps(options: TaskOpsOptions = {}) {
         const chosen = baseBranch(locateCheckout(root, { env }), env, root);
         return provedStacks(seen, handBackGit, chosen.from === "default" ? null : chosen.base);
       };
+      // The overlaps this call's write finds (`FilesCheck.found`): warned about after it.
+      const found: PlanOverlap[] = [];
+      let filesRead: OverlapCheck | undefined;
+      /** The files check (`planFilesCheck`, or the test's own), read from git once per call. */
+      const filesCheck = (): OverlapCheck => {
+        filesRead ??= (options.filesCheck ?? planFilesCheck)(cwd);
+        return filesRead;
+      };
       /**
-       * What an overlap is judged by, read from git before the write lock: the files check
-       * (`planFilesCheck`, or the test's own) and the proved stacks (`readStacks`) of `seen`.
+       * What an overlap is judged by, read from git before the write lock: the files check and the
+       * proved stacks (`readStacks`) of `seen`, with `found` for what the write finds.
        */
       const readCheck = (seen: readonly WorkTask[]): FilesCheck => ({
-        ...(options.filesCheck ?? planFilesCheck)(cwd),
+        ...filesCheck(),
         stacked: readStacks(seen),
+        found,
       });
+      /**
+       * The warning lines for the overlaps the write found, after its lock (`warnOverlaps`: the
+       * `Overlap:` notes, and the generated files among the shared paths, which need git).
+       */
+      const warnFound = () => {
+        if (found.length > 0) notes.push(...warnOverlaps(store, found, filesCheck(), who, now));
+      };
       /**
        * A plan's new file list, checked before the write lock: each entry is normalised (D2) and
        * a folder written without its `/` is refused with the fix. It always reads `plans.mergeFiles`
        * and case from git here (whether the plan is held is only known inside the transaction), so
-       * no git runs under the lock; the store then judges an overlap there.
+       * no git runs under the lock; the store then finds any overlap there.
        */
       const filesWrite = (files: readonly string[], seen: readonly WorkTask[]) => {
         for (const raw of files) {
@@ -422,7 +438,7 @@ export function createTaskOps(options: TaskOpsOptions = {}) {
       };
       /**
        * A plan's new file list and stack, as one update: a stack set or cleared on a held plan is
-       * judged like a new list (`refuseHeldOverlap`), so it reads the same check before the lock,
+       * judged like a new list (`heldOverlaps`), so it reads the same check before the lock,
        * on `seen` (`asWritten`). Null when the call changes neither.
        */
       const planWrite = (
@@ -441,14 +457,13 @@ export function createTaskOps(options: TaskOpsOptions = {}) {
         };
       };
       /**
-       * How a plan's start is judged against the plans held for others (the store refuses an
+       * How a plan's start is judged against the plans held for others (the store finds an
        * overlap in the start's own write): the real `plans.mergeFiles` and case read, taken before
        * the lock, whenever this start puts a plan into flight (it has a plan row that is not in
        * flight yet). A step in a plan that already runs reads nothing, so git runs once per plan
-       * start, never once per step. The store's own default (nothing ignored, case compared) is
-       * for a caller with no read. It judges this path in one race: the read here sees the plan
-       * in flight, then its last running task closes before the lock, so the start is judged with
-       * that default.
+       * start, never once per step. With no read the store does not judge the start. That is so
+       * in one race: the read here sees the plan in flight, then its last running task closes
+       * before the lock, so that start warns of no overlap.
        */
       const startCheck = (
         plan: string | null,
@@ -660,6 +675,7 @@ export function createTaskOps(options: TaskOpsOptions = {}) {
                 return listed === null ? row : applyUpdate(store, row.id, listed, who, now);
               }),
             );
+            warnFound();
             return {
               ok: true,
               text: `${label(made)} · plan ${slug}${there ? " · it was there already" : ""}`,
@@ -741,6 +757,7 @@ export function createTaskOps(options: TaskOpsOptions = {}) {
             return made;
           }),
         );
+        warnFound();
         const byId = new Map(allTasks(store, ctx.project).map((t) => [t.id, t]));
         return {
           ok: true,
@@ -908,6 +925,7 @@ export function createTaskOps(options: TaskOpsOptions = {}) {
             return changed;
           }),
         );
+        warnFound();
         const afterAll = allTasks(store, ctx.project);
         const byId = new Map(afterAll.map((t) => [t.id, t]));
         const closed = updated.status === "done" || updated.status === "dropped";

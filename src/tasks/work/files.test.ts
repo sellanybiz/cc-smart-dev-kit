@@ -5,17 +5,18 @@
  */
 import { Database } from "bun:sqlite";
 import { expect, test } from "bun:test";
-import { mkdirSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { COMMAND } from "../../build-info/names";
 import { cliPaths } from "../../cli/paths";
 import { commitConfig, hookEnv, makeClone, makeRepo, writeClaudeFile } from "../../testing/hooks";
-import { tempDir } from "../../testing/temp";
+import { git, tempDir } from "../../testing/temp";
 import { normalizeMergeFile, workflowSchema } from "../../workflow/schema";
 import { folderProject } from "../context";
 import { planFilesCheck } from "../files-check";
 import { createTaskOps, type TaskAnswer } from "../ops";
 import { openWorkDb, workDbFile } from "./db";
-import { allTasks, eventsOf, filesOverlap, normalizePlanFile, planFiles } from "./queries";
+import { allTasks, eventsOf, filesOverlap, normalizePlanFile, notesOf, planFiles } from "./queries";
 import { readWorkStore } from "./read";
 import { createTask, deleteTask, reservePlan, updateTask } from "./store";
 import type { Result } from "./types";
@@ -33,6 +34,19 @@ function said(answer: TaskAnswer): string {
 function refused(answer: TaskAnswer): string {
   if (answer.ok) throw new Error(`expected a refusal, got: ${answer.text}`);
   return answer.why;
+}
+/** The overlap warning lines of an answer that passed: its lines after the first that start `Overlap`. */
+function warned(answer: TaskAnswer): string[] {
+  return said(answer)
+    .split("\n")
+    .slice(1)
+    .filter((line) => line.startsWith("Overlap"));
+}
+/** The opening words of an overlap line: the two plans and what they share. */
+function shared(line: string): string {
+  const head = /^Overlap: (.*? share .*?)\.(?: |$)/.exec(line);
+  if (head === null) throw new Error(`not an overlap line: ${line}`);
+  return head[1] ?? "";
 }
 function setup() {
   const paths = { stateDir: tempDir() };
@@ -464,18 +478,160 @@ test("plans.appendOnly counts only as committed on origin/<base>, and lets two p
     // Both add files to the folder, so both are held at once.
     reserve("alpha");
     reserve("beta");
-    // A folder outside the list overlaps as before.
-    expect(refused(ops.call("update", { task: "#2", files: ["db/migrations/", "src/"] }))).toBe(
-      '#2 "Beta" is held, so its files may not overlap another held plan: overlaps #1 "Alpha": src/ (src/a.ts)',
-    );
+    // A folder outside the list overlaps as before: the update lands, with the warning.
+    expect(
+      warned(ops.call("update", { task: "#2", files: ["db/migrations/", "src/"] })).map(shared),
+    ).toEqual(['#1 "Alpha" and #2 "Beta" share src/a.ts (src/)']);
+    expect(warned(ops.call("update", { task: "#2", files: ["db/migrations/"] }))).toEqual([]);
     // Two new files are clear; the same file named by both is not.
-    said(ops.call("update", { task: "#1", files: ["db/migrations/003.sql", "src/a.ts"] }));
-    said(ops.call("update", { task: "#2", files: ["db/migrations/004.sql"] }));
-    expect(refused(ops.call("update", { task: "#2", files: ["db/migrations/003.sql"] }))).toBe(
-      '#2 "Beta" is held, so its files may not overlap another held plan: overlaps #1 "Alpha": db/migrations/003.sql',
+    expect(
+      warned(ops.call("update", { task: "#1", files: ["db/migrations/003.sql", "src/a.ts"] })),
+    ).toEqual([]);
+    expect(warned(ops.call("update", { task: "#2", files: ["db/migrations/004.sql"] }))).toEqual(
+      [],
     );
+    expect(
+      warned(ops.call("update", { task: "#2", files: ["db/migrations/003.sql"] })).map(shared),
+    ).toEqual(['#1 "Alpha" and #2 "Beta" share db/migrations/003.sql']);
   } finally {
     db.close();
     ops.close();
+  }
+});
+
+/**
+ * A clone whose origin/main commits `.gitattributes` (`db/*.gen.ts` generated), two generated
+ * files and one plain file in `db/`, and `plans.mergeFiles` with `CHANGELOG.md`; then the task
+ * tools of two sessions, each reading the real check of the checkout.
+ */
+function generatedWorld() {
+  const { repo } = makeClone();
+  const env = hookEnv();
+  mkdirSync(join(repo, "db"));
+  writeFileSync(join(repo, ".gitattributes"), "db/*.gen.ts linguist-generated\n");
+  for (const file of ["db/types.gen.ts", "db/client.gen.ts", "db/schema.ts", "src.ts"])
+    writeFileSync(join(repo, file), "export {};\n");
+  git(repo, "add", ".");
+  git(repo, "commit", "-q", "-m", "generated files");
+  commitConfig(repo, { workflow: { plans: { mergeFiles: ["CHANGELOG.md"] } } }, ["main"]);
+  const stateDir = cliPaths(env).stateDir;
+  const ops = (who: typeof LEAD) =>
+    createTaskOps({ stateDir, env, cwd: () => repo, caller: () => ({ ...who, cwd: repo }) });
+  /** The `Overlap:` notes of the task numbered `number`, oldest first. */
+  const notes = (number: number) => {
+    const db = openWorkDb(workDbFile({ stateDir }), { mode: "write" });
+    try {
+      const task = allTasks(db, folderProject(repo)).find((t) => t.number === number);
+      return notesOf(db, task?.id ?? "")
+        .map((note) => note.text)
+        .filter((text) => text.startsWith("Overlap:"));
+    } finally {
+      db.close();
+    }
+  };
+  return { repo, ops, notes };
+}
+const SECOND: typeof LEAD = { sessionId: "second", pid: 4202, procStart: "42020" };
+
+test("a base-marked generated file the overlap holds is named with the ready propose line, in both orders", () => {
+  const expected = `origin/main marks db/types.gen.ts generated: \`${COMMAND} workflow propose plans.mergeFiles 'CHANGELOG.md,db/types.gen.ts'\` opens the pull request that leaves them out of every overlap once the person merges it.`;
+  for (const order of [
+    ["alpha", "beta"],
+    ["beta", "alpha"],
+  ]) {
+    const w = generatedWorld();
+    // A mark only on the checkout's own branch, not on origin/main, never counts.
+    writeFileSync(join(w.repo, ".gitattributes"), "* linguist-generated\n");
+    git(w.repo, "commit", "-q", "-am", "a local mark");
+    const lead = w.ops(LEAD);
+    const second = w.ops(SECOND);
+    try {
+      said(lead.call("create", { subject: "Alpha", plan: "alpha", files: ["db/", "src.ts"] }));
+      said(
+        second.call("create", {
+          subject: "Beta",
+          plan: "beta",
+          files: ["db/types.gen.ts", "src.ts", "CHANGELOG.md"],
+        }),
+      );
+      const starts = {
+        alpha: () => lead.call("update", { task: "#1", status: "in_progress" }),
+        beta: () => second.call("update", { task: "#2", status: "in_progress" }),
+      };
+      expect(warned(starts[order[0] as "alpha"]())).toEqual([]);
+      const lines = warned(starts[order[1] as "beta"]());
+      expect(lines.map(shared)).toEqual([
+        '#1 "Alpha" and #2 "Beta" share db/ (db/types.gen.ts), src.ts',
+      ]);
+      expect(lines[0]).toEndWith(expected);
+      // The same text is noted on both plans.
+      expect([w.notes(1), w.notes(2)]).toEqual([lines, lines]);
+    } finally {
+      lead.close();
+      second.close();
+    }
+  }
+});
+
+test("two folders that share a generated file name the file, never the folder", () => {
+  const w = generatedWorld();
+  const lead = w.ops(LEAD);
+  const second = w.ops(SECOND);
+  try {
+    said(lead.call("create", { subject: "Alpha", plan: "alpha", files: ["db/"] }));
+    said(second.call("create", { subject: "Beta", plan: "beta", files: ["db/"] }));
+    said(lead.call("update", { task: "#1", status: "in_progress" }));
+    const [line] = warned(second.call("update", { task: "#2", status: "in_progress" }));
+    expect(shared(line ?? "")).toBe('#1 "Alpha" and #2 "Beta" share db/');
+    expect(line).toContain(
+      `origin/main marks db/client.gen.ts, db/types.gen.ts generated: \`${COMMAND} workflow propose plans.mergeFiles 'CHANGELOG.md,db/client.gen.ts,db/types.gen.ts'\``,
+    );
+  } finally {
+    lead.close();
+    second.close();
+  }
+});
+
+test("a merge file the base commits settles its path: no warning, and no note", () => {
+  const w = generatedWorld();
+  const lead = w.ops(LEAD);
+  const second = w.ops(SECOND);
+  try {
+    said(lead.call("create", { subject: "Alpha", plan: "alpha", files: ["CHANGELOG.md"] }));
+    said(second.call("create", { subject: "Beta", plan: "beta", files: ["CHANGELOG.md"] }));
+    expect(warned(lead.call("update", { task: "#1", status: "in_progress" }))).toEqual([]);
+    expect(warned(second.call("update", { task: "#2", status: "in_progress" }))).toEqual([]);
+    expect([w.notes(1), w.notes(2)]).toEqual([[], []]);
+  } finally {
+    lead.close();
+    second.close();
+  }
+});
+
+test("a wider overlap adds a new note; the same one again adds none", () => {
+  const w = generatedWorld();
+  const lead = w.ops(LEAD);
+  const second = w.ops(SECOND);
+  try {
+    said(
+      lead.call("create", { subject: "Alpha", plan: "alpha", files: ["src.ts", "db/schema.ts"] }),
+    );
+    said(second.call("create", { subject: "Beta", plan: "beta", files: ["src.ts"] }));
+    said(lead.call("update", { task: "#1", status: "in_progress" }));
+    said(second.call("update", { task: "#2", status: "in_progress" }));
+    expect(w.notes(2)).toHaveLength(1);
+    // The same list again: the answer still warns, and no second note is saved.
+    expect(warned(second.call("update", { task: "#2", files: ["src.ts"] })).map(shared)).toEqual([
+      '#1 "Alpha" and #2 "Beta" share src.ts',
+    ]);
+    expect(w.notes(2)).toHaveLength(1);
+    // A wider list: a new note on each plan.
+    expect(
+      warned(second.call("update", { task: "#2", files: ["src.ts", "db/schema.ts"] })).map(shared),
+    ).toEqual(['#1 "Alpha" and #2 "Beta" share db/schema.ts, src.ts']);
+    expect([w.notes(1).length, w.notes(2).length]).toEqual([2, 2]);
+  } finally {
+    lead.close();
+    second.close();
   }
 });

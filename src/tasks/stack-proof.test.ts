@@ -44,6 +44,17 @@ function refused(answer: TaskAnswer): string {
   if (answer.ok) throw new Error(`expected a refusal, got: ${answer.text}`);
   return answer.why;
 }
+/**
+ * The opening words of each overlap warning an answer that passed carries: the two plans and
+ * what they share (`#1 "alpha" and #2 "beta" share src/a/ (src/a/x.ts)`).
+ */
+function warned(answer: TaskAnswer): string[] {
+  return said(answer)
+    .split("\n")
+    .slice(1)
+    .filter((line) => line.startsWith("Overlap: "))
+    .map((line) => line.split(". ")[0]?.replace(/^Overlap: /, "") ?? "");
+}
 
 /** Commits `files` in `repo`, dated `date` when given (else now), and returns the commit. */
 function commit(repo: string, files: Record<string, string>, date?: string): string {
@@ -588,11 +599,9 @@ test("PROBE 1: a stack moved to another parent in one update carries no proof: t
   w.reserve("gamma");
   // Gamma records no branch: no stack on it can be proved, and beta's proof on alpha is no proof on gamma.
   expect(
-    refused(w.call(LEAD, "update", { task: "#2", stacked_on: "gamma", files: ["src/c/x.ts"] })),
-  ).toBe(
-    '#2 "beta" is held, so its files may not overlap another held plan: overlaps #3 "gamma": src/c/x.ts (src/c/)',
-  );
-  expect([w.row("beta").stackedOn, w.row("beta").files]).toEqual(["alpha", ["src/b/"]]);
+    warned(w.call(LEAD, "update", { task: "#2", stacked_on: "gamma", files: ["src/c/x.ts"] })),
+  ).toEqual(['#2 "beta" and #3 "gamma" share src/c/x.ts (src/c/)']);
+  expect([w.row("beta").stackedOn, w.row("beta").files]).toEqual(["gamma", ["src/c/x.ts"]]);
 });
 
 test("PROBE 1b: a stack moved to another parent while the plan starts is judged on the new parent", () => {
@@ -602,13 +611,12 @@ test("PROBE 1b: a stack moved to another parent while the plan starts is judged 
   w.set("beta", { branch: w.built("beta"), base: w.tip });
   w.reserve("alpha");
   w.reserve("gamma");
-  // The start makes beta held in the same write, so its new stack is judged like a held plan's.
+  // The start makes beta held in the same write, so its new stack is judged like a held plan's:
+  // the held check and the start find the same pair and paths, so it is said once.
   expect(
-    refused(w.call(LEAD, "update", { task: "#2", stacked_on: "gamma", status: "in_progress" })),
-  ).toBe(
-    '#2 "beta" is held, so its files may not overlap another held plan: overlaps #3 "gamma": src/c/x.ts (src/c/)',
-  );
-  expect([w.row("beta").stackedOn, w.row("beta").status]).toEqual(["alpha", "pending"]);
+    warned(w.call(LEAD, "update", { task: "#2", stacked_on: "gamma", status: "in_progress" })),
+  ).toEqual(['#2 "beta" and #3 "gamma" share src/c/x.ts (src/c/)']);
+  expect([w.row("beta").stackedOn, w.row("beta").status]).toEqual(["gamma", "in_progress"]);
 });
 
 test("PROBE 3b: through the task tools, a plan stacked on a stacked plan but started below its work is a rival", () => {
@@ -620,7 +628,7 @@ test("PROBE 3b: through the task tools, a plan stacked on a stacked plan but sta
   // Grand records where it really started (alpha's tip, below child's work) and its real branch.
   git(w.repo, "branch", "grand-branch", "alpha-branch");
   expect(
-    refused(
+    warned(
       w.call(LEAD, "update", {
         task: "#3",
         base: w.tip,
@@ -628,7 +636,7 @@ test("PROBE 3b: through the task tools, a plan stacked on a stacked plan but sta
         status: "in_progress",
       }),
     ),
-  ).toContain('#3 "grand" cannot start, since it overlaps #2 "child": src/c/x.ts (src/c/)');
+  ).toEqual(['#2 "child" and #3 "grand" share src/c/ (src/c/x.ts)']);
 });
 
 test("a stack set in the same call as the start is proved on that stack", () => {
@@ -648,11 +656,11 @@ test("a base set in the same call as the start is judged, not the base it replac
   w.reserve("alpha");
   // The stored base is proved; the call moves it to the default branch: judged on the new one.
   expect(
-    refused(w.call(LEAD, "update", { task: "#2", base: w.base, status: "in_progress" })),
-  ).toContain('#2 "beta" cannot start, since it overlaps #1 "alpha": src/a/x.ts (src/a/)');
-  expect(w.row("beta").base).toBe(w.tip);
-  // The stored base is not proved; the call moves it to alpha's tip: judged on that one.
-  w.set("beta", { base: w.base });
+    warned(w.call(LEAD, "update", { task: "#2", base: w.base, status: "in_progress" })),
+  ).toEqual(['#1 "alpha" and #2 "beta" share src/a/ (src/a/x.ts)']);
+  expect(w.row("beta").base).toBe(w.base);
+  // Parked again, with the base not proved; the call moves it to alpha's tip: judged on that one.
+  w.set("beta", { status: "pending" });
   expect(said(w.call(LEAD, "update", { task: "#2", base: w.tip, status: "in_progress" }))).toBe(
     '#2 "beta" · in progress · stacked on alpha',
   );
@@ -673,9 +681,9 @@ test("a take by another session ends the pair: the same lead must lead both when
   said(w.call(OTHER, "take", { task: "beta" }));
   // The stack and its git proof are as before; another session leads beta now, so alpha is a rival.
   expect(w.row("beta").stackedOn).toBe("alpha");
-  expect(refused(w.call(OTHER, "update", { task: "#2", status: "in_progress" }))).toContain(
-    '#2 "beta" cannot start, since it overlaps #1 "alpha": src/a/x.ts (src/a/)',
-  );
+  expect(warned(w.call(OTHER, "update", { task: "#2", status: "in_progress" }))).toEqual([
+    '#1 "alpha" and #2 "beta" share src/a/ (src/a/x.ts)',
+  ]);
   expect(
     provedStacks(
       w.db((d) => allTasks(d, w.project)),
@@ -703,9 +711,9 @@ test("a stacked plan whose recorded branch does not hold its base is judged as a
   w.onBranch("beta-branch", { "beta.txt": "1\n" }, "main");
   w.set("beta", { branch: "beta-branch", base: w.tip });
   w.reserve("alpha");
-  expect(refused(w.call(LEAD, "update", { task: "#2", status: "in_progress" }))).toContain(
-    '#2 "beta" cannot start, since it overlaps #1 "alpha": src/a/x.ts (src/a/)',
-  );
+  expect(warned(w.call(LEAD, "update", { task: "#2", status: "in_progress" }))).toEqual([
+    '#1 "alpha" and #2 "beta" share src/a/ (src/a/x.ts)',
+  ]);
 });
 
 test("a parent rebased after its stacked plan started makes them rivals; one that moves on does not", () => {
@@ -725,9 +733,9 @@ test("a parent rebased after its stacked plan started makes them rivals; one tha
   rebased.reserve("alpha");
   rebased.onMain({ "main.txt": "1\n" });
   rebased.rebase("alpha-branch");
-  expect(refused(rebased.call(LEAD, "update", { task: "#2", status: "in_progress" }))).toContain(
-    '#2 "beta" cannot start, since it overlaps #1 "alpha": src/a/x.ts (src/a/)',
-  );
+  expect(warned(rebased.call(LEAD, "update", { task: "#2", status: "in_progress" }))).toEqual([
+    '#1 "alpha" and #2 "beta" share src/a/ (src/a/x.ts)',
+  ]);
 });
 
 test("the task tools set a stack on create and update, show it, and refuse it off a plan", () => {
@@ -772,7 +780,7 @@ test("the task tools set a stack on create and update, show it, and refuse it of
   );
 });
 
-test("a stacked plan's phase starts beside its reserved parent only when its base holds the parent's work", () => {
+test("a stacked plan's phase starts beside its reserved parent with no warning only when its base holds the parent's work", () => {
   const w = world();
   const layPhase = (who: Who, slug: string, files: string[], stackedOn?: string) => {
     w.lay(slug, files, stackedOn, who);
@@ -788,15 +796,17 @@ test("a stacked plan's phase starts beside its reserved parent only when its bas
   w.reserve("alpha");
   // Beta records the default branch as its start: its stack is not proved, so alpha is a rival.
   w.set("beta", { branch: w.built("beta"), base: w.base });
-  expect(refused(w.call(LEAD, "update", { task: beta, status: "in_progress" }))).toContain(
-    '"beta" cannot start, since it overlaps #1 "alpha": src/a/x.ts (src/a/)',
-  );
-  // Built on alpha's branch, it starts beside alpha in parallel.
+  expect(warned(w.call(LEAD, "update", { task: beta, status: "in_progress" }))).toEqual([
+    '#1 "alpha" and #2 "beta" share src/a/ (src/a/x.ts)',
+  ]);
+  // Parked, then built on alpha's branch, it starts beside alpha in parallel with no warning.
+  said(w.call(LEAD, "update", { task: beta, status: "pending" }));
+  said(w.call(LEAD, "update", { task: "#2", status: "pending" }));
   w.set("beta", { base: w.tip });
   expect(said(w.call(LEAD, "update", { task: beta, status: "in_progress" }))).toBe(
     `${beta} "beta phase" · in progress`,
   );
-  expect(refused(w.call(THIRD, "update", { task: gamma, status: "in_progress" }))).toContain(
-    '"gamma" cannot start, since it overlaps #1 "alpha": src/a/y.ts (src/a/)',
-  );
+  expect(warned(w.call(THIRD, "update", { task: gamma, status: "in_progress" }))).toEqual([
+    '#1 "alpha" and #5 "gamma" share src/a/ (src/a/y.ts)',
+  ]);
 });
