@@ -370,12 +370,18 @@ change itself is `project.workflow.propose`: the page asks first (`confirm`), th
 name its project by id (a body with none is refused in words, because the command pushes a
 branch and opens a pull request, and "no project" must never mean the portal's own folder —
 `project.gateway.set` has the same rule), then `runCliChild` runs the CLI's own `workflow
-propose` in a child in the project's folder — a branch, a worktree, a commit and a push never
-run in the server's process. The child gets at least the command's own worst case
+propose` in a child in the project's folder — the fetch, the commit (made with git plumbing,
+with no worktree and none of the project's git hooks, `docs/design/workflow.md`), the push and
+`gh pr create` never run in the server's process. The child gets at least the command's own worst case
 (`PROPOSE_WORST_CASE_MS`, the sum of its step limits): its limits fire, and the take-back after
 a failed step runs, before the child is ended from outside. It runs with `--json`, and the
 answer carries the pull request's URL for the card's link only when the run exited 0 — a
-refusal's output never becomes a link. The child drops `CLAUDECODE`: the portal inherits it
+refusal's output never becomes a link. The portal reads `branch` and `url` from the command's one
+`ProposedJson` line (`proposedLine`; the type is the contract, and the test's fake is built from
+it, so a shape change fails a test), and answers `Opened <url>` and `Branch <branch>. <the
+MADE_WITHOUT_HOOKS sentence>`, so the card says the commit was made without the project's git
+hooks. When the child is ended at the worst case, `proposeTimeoutLine` says the branch or the pull
+request may exist and where to look. The child drops `CLAUDECODE`: the portal inherits it
 from the session start that launched it, and a command that refuses inside a session — a
 review-gate setting, above all — must not refuse the person's own click. A review-gate change
 counts once the pull request is merged, so the click opens the gate's own review rather than
@@ -486,8 +492,8 @@ step's last line and the action's result go out on the stream (`action` events),
 the install as it happens.
 
 **An action that would block runs the CLI's own command in a child.** `worktrees --clean`
-fetches, scans and removes through synchronous spawns; `workflow propose` (D57) makes a
-worktree, a commit and a push; the Gateway card's two commands (GP4b) run git and ask the
+fetches, scans and removes through synchronous spawns; `workflow propose` (D57) fetches, makes a
+commit, pushes and opens a pull request; the Gateway card's two commands (GP4b) run git and ask the
 router; `sessions --finished --remove` runs `claude rm`. Run in the server, one click froze
 every page, every other action and the stream for as long as they took. So those actions run
 the CLI's own command in a child (`src/portal/cli-child.ts`): `dist/cli.js workflow propose`

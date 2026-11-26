@@ -183,6 +183,11 @@ take) is `docs/design/tasks.md` § Plans handed to children.
   reserve plans | adopt another lead's plans>." and "A follow-up child never coordinates: it works
   its lead's findings only, so it cannot …", each with the fix "Report to your lead with
   cc-smart-dev-kit herdr report; the lead hands plans out." (`refusePlanChild`, `command.ts`).
+- It refuses, before any store read, reservation or launch, when the project's
+  `.claude/cc-smart-dev-kit.json` is one this kit cannot use (broken, or a `requires` it does not
+  meet), with the task tools' own words and fix (`taskWriteRefusal`, `docs/design/tasks.md`
+  § Who a call belongs to). `plans`, `plans --reserve`, `plans --release` and `start --task` refuse
+  the same way, and `adopt` moves no plan (its `warn` line names the reason, exit 0).
 - The slug resolves with the take path's resolver (`planByRef`), so `#n` works as well. The
   plan must be one this session laid and not started.
 - It refuses when the default branch is only a guess (no `origin/HEAD`, no `worktrees.base`),
@@ -200,9 +205,12 @@ read first, outside any store write (`git diff --name-only --no-renames
 origin/<default>...<branch>` lists both sides of a rename), so no git runs under the write lock.
 
 **The reservation.** `reservePlan` takes the plan in one transaction. It refuses a plan with an
-open blocker, no file list, an existing reservation or files that overlap a **held** plan, and any
-held plan with no file list and no branch diff (the rule is in `docs/design/tasks.md`, under "Held"). A held
-plan is any reserved plan until it is released, and any session's own plan in flight.
+open blocker, no file list or an existing reservation. Files that overlap a **held** plan, and a
+held plan with no file list and no branch diff, never refuse (6.7.0): `start --plan` and
+`plans --reserve` print a `warn` line for each, and both plans get an `Overlap:` note (the wording
+and the rule are in `docs/design/tasks.md`, under "The warning and the note"; the plan that merges
+second catches up, `plugin/skills/build/SKILL.md` § 6 "An overlapping plan"). A held plan is any
+reserved plan until it is released, and any session's own plan in flight.
 `plans.mergeFiles` never counts, inside a `plans.appendOnly` folder only the same file overlaps,
 and case folds when `core.ignorecase` is on. All three come from `planFilesCheck`: the two lists
 from one read of the committed copy on `origin/<default>` (`resolvePlanFiles`), never the working
@@ -212,7 +220,7 @@ proved for that pair and one lead leads both plans: the stacked plan's start sha
 own work (`judgeStacks`, the rule is in `docs/design/tasks.md`, under "Stacked plans"). `judgePlans`
 reads that proof before the transaction, with the commit a start resets the child to and the
 default branch it found (a guessed one proves nothing), and passes the proved pairs to
-`reservePlan`; a stack it cannot prove leaves the parent a rival, and the line's fix says why: the
+`reservePlan`; a stack it cannot prove leaves the parent a rival, warned about, and the line's fix says why: the
 parent records no branch or no start (`base`: the exact commit its branch was created from), the
 plan the parent is stacked on is finished and its branch gone (clear the parent's stack on it), the
 parent has no commit of its own yet (wait for it), another
@@ -232,7 +240,7 @@ and `branch` go in once, on a first start.
 resolves with `planByRef`, then it runs the same live gates and held-plan diffs as `start --plan`
 and `reservePlan` with holder `self`, with `ignore` and `caseFold` from `planFilesCheck`, read
 before the write lock. It prints one line naming the plan and the next step: start its first phase
-as usual. It refuses from a plan child or a follow-up child (the terminal carries `kit.plan` or `kit.followup`), when the default branch
+as usual, and a `warn` line for each overlap. It refuses from a plan child or a follow-up child (the terminal carries `kit.plan` or `kit.followup`), when the default branch
 is only a guess, and for a plan that is not pending (one already started: park it first, then reserve it), not the
 caller's own or already reserved, each with its fix. It stands alone: `--wait`, `--json` and `--release` cannot join it. A reserved plan stays held until
 its pull request merges or closes (or the settle proof below holds; an unreserved plan's files are free once its task closes): the classifier reads it as `own`, then `merging` once it is closed, and a
@@ -282,10 +290,9 @@ has words of its own (`docs/design/tasks.md`).
 
 | `--json` state | Meaning |
 |---|---|
-| `ready` | Every blocker is clear and the files overlap no held plan. |
+| `ready` | Every blocker is clear. A plan that shares files with a held plan, or sits beside a held plan with no file list, is ready too: its line names the other plan and the files, and says an overlap warns and never holds a plan back. |
 | `waiting` | A blocker is open, or its pull request is open or not yet on the default branch. |
-| `blocked` | A blocker cannot clear by itself: no branch recorded, no start commit to prove a merge from, an empty branch, a branch not in this repository, or a pull request closed unmerged; or a held plan has no file list and no branch diff, so no overlap can be ruled out. The line carries its fix. |
-| `overlaps` | Files shared with a held plan; the line names both. |
+| `blocked` | A blocker cannot clear by itself: no branch recorded, no start commit to prove a merge from, an empty branch, a branch not in this repository, or a pull request closed unmerged. The line carries its fix. |
 | `no-files` | No file list yet (the line says "has no file list"; the status line says "needs files"): `task_update` with `files`. |
 | `own` | Reserved for this session itself with `plans --reserve`: it builds the plan. |
 | `with-child` | A child holds it. Drift shows here: its branch reached another held plan's files. |
@@ -293,6 +300,9 @@ has words of its own (`docs/design/tasks.md`).
 | `stale` | A hand-out no child took, its pane gone. |
 | `merging` | Finished, files still held until its pull request settles. |
 | `released` | This pass released a reservation. |
+
+6.7.0 removed the `overlaps` state, since an overlap no longer holds a plan back: a `--json`
+reader that looked for it now finds `ready`, with the overlap named in the line.
 
 A blocker clears when its pull request merged; or, with no pull request or no answer from gh, when
 its branch holds commits past its recorded `base` and is on `origin/<default>` (`onDefaultBranch`,
@@ -600,7 +610,7 @@ These are policy checks, not a sandbox; keep that limit explicit.
 | A follow-up child ended with unmerged commits | The next `start --followup` is refused and names its worktree and branch, if `hc` still lists the terminal; after `herdr stop` it cannot be seen. |
 | A follow-up child is live under a lead that ended | The start is refused; `herdr adopt` takes the child over. |
 | `ship` arrives at a blocked child | The lead tells the person, notes "send ship to <terminal>" and sends it when the child is free. |
-| Two plan hand-outs share a file | The second `start --plan` is refused by the reservation and names the plan in its way. |
+| Two plan hand-outs share a file | Both start (6.7.0). The second `start --plan` prints one `warn` line naming the other plan and the shared files, and both plans get an `Overlap:` note; the plan that merges second catches up (`plugin/skills/build/SKILL.md` § 6). |
 | A plan child's pane closes | `child-gone`: `start --plan <slug>` resumes it in its recorded worktree. |
 | A session from before 5.2.0 | It ignores reservations: its take and start do not check them and its drop does not release. Restart it before plans are handed out. |
 | New hc fields | Tolerant schemas keep them; unknown dialog kinds stay pane-only. |
