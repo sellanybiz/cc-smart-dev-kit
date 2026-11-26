@@ -39,7 +39,7 @@ var MIN_BUN = "1.4.3";
 
 // src/build-info/index.ts
 var info = {
-  version: "6.7.1",
+  version: "6.7.2",
   repo: "sellanybiz/cc-smart-dev-kit",
   dependencies: [
     {
@@ -6446,6 +6446,20 @@ var init_zod = __esm(() => {
   init_external();
 });
 
+// src/setup/user-json.ts
+import { readFileSync as readFileSync6 } from "fs";
+function withoutBom(text) {
+  return text.startsWith(BOM) ? text.slice(BOM.length) : text;
+}
+function parseUserJson(text) {
+  return JSON.parse(withoutBom(text));
+}
+function readUserJson(file) {
+  return parseUserJson(readFileSync6(file, "utf8"));
+}
+var BOM = "\uFEFF";
+var init_user_json = () => {};
+
 // src/hooks/detached.ts
 import { spawn } from "child_process";
 function unableInCmd(argument) {
@@ -6756,23 +6770,9 @@ var init_lock = __esm(() => {
   };
 });
 
-// src/setup/user-json.ts
-import { readFileSync as readFileSync11 } from "fs";
-function withoutBom(text) {
-  return text.startsWith(BOM) ? text.slice(BOM.length) : text;
-}
-function parseUserJson(text) {
-  return JSON.parse(withoutBom(text));
-}
-function readUserJson(file) {
-  return parseUserJson(readFileSync11(file, "utf8"));
-}
-var BOM = "\uFEFF";
-var init_user_json = () => {};
-
 // src/setup/managed-json.ts
 import { createHash as createHash3 } from "crypto";
-import { existsSync as existsSync6, readFileSync as readFileSync12 } from "fs";
+import { existsSync as existsSync6, readFileSync as readFileSync11 } from "fs";
 import { join as join8 } from "path";
 function formatKeyPath(path) {
   return path.map((segment, index) => {
@@ -6793,7 +6793,7 @@ function detectIndent(text) {
 function readJsonObject(file) {
   if (!existsSync6(file))
     return { data: {}, indent: "  ", text: null };
-  return parseJsonObject(readFileSync12(file, "utf8"), file);
+  return parseJsonObject(readFileSync11(file, "utf8"), file);
 }
 function parseJsonObject(text, file) {
   if (text.trim() === "")
@@ -6833,7 +6833,7 @@ function readOwned(stateDir) {
   const file = join8(stateDir, OWNED_FILE);
   if (!existsSync6(file))
     return {};
-  const parsed = JSON.parse(readFileSync12(file, "utf8"));
+  const parsed = JSON.parse(readFileSync11(file, "utf8"));
   if (!isObject2(parsed))
     throw new Error(`Invalid ${file}: expected an object`);
   const owned = {};
@@ -7257,7 +7257,7 @@ var init_git_env = __esm(() => {
 
 // src/workflow/reviews.ts
 import { createHash as createHash4 } from "crypto";
-import { mkdirSync as mkdirSync7, readFileSync as readFileSync20 } from "fs";
+import { mkdirSync as mkdirSync7, readFileSync as readFileSync19 } from "fs";
 import { dirname as dirname8, join as join14 } from "path";
 function recordsReview(agent, agents) {
   return agents.some((name) => name === agent);
@@ -7273,7 +7273,7 @@ function reviewStartsFile(stateDir, repo) {
 }
 function readObject(file) {
   try {
-    const parsed = JSON.parse(readFileSync20(file, "utf8"));
+    const parsed = JSON.parse(readFileSync19(file, "utf8"));
     return typeof parsed === "object" && parsed !== null && !Array.isArray(parsed) ? parsed : {};
   } catch {
     return {};
@@ -7388,7 +7388,7 @@ var init_reviews = __esm(() => {
 });
 
 // src/hooks/git.ts
-import { readFileSync as readFileSync21, realpathSync as realpathSync2 } from "fs";
+import { readFileSync as readFileSync20, realpathSync as realpathSync2 } from "fs";
 import { basename as basename3, dirname as dirname9, join as join15, resolve as resolve4 } from "path";
 function runGit(cwd, args, env, timeoutMs = 15000, own = {}, input) {
   return spawnGit(cwd, args, env, timeoutMs, own, true, input);
@@ -7493,7 +7493,8 @@ function parseWorktreeList(porcelain) {
       branch: value("branch")?.replace(/^refs\/heads\//, "") ?? null,
       locked: flag("locked"),
       ...lockReason === undefined || lockReason === "" ? {} : { lockReason },
-      prunable: flag("prunable")
+      prunable: flag("prunable"),
+      ...flag("bare") ? { bare: true } : {}
     });
   }
   return worktrees;
@@ -7520,7 +7521,7 @@ function hasChanges(folder, env) {
 function worktreeAdminDir(worktree) {
   let text;
   try {
-    text = readFileSync21(join15(worktree, ".git"), "utf8");
+    text = readFileSync20(join15(worktree, ".git"), "utf8");
   } catch {
     return null;
   }
@@ -10515,7 +10516,7 @@ var init_version_range = __esm(() => {
 });
 
 // src/project/config.ts
-import { existsSync as existsSync12, readFileSync as readFileSync22 } from "fs";
+import { existsSync as existsSync12, readFileSync as readFileSync21 } from "fs";
 import { posix as posix2, win32 as win322 } from "path";
 function describeIssue(issue) {
   const field = issue.path.length > 0 ? issue.path.join(".") : "(top level)";
@@ -10571,7 +10572,7 @@ function checkPersonalOnlyFields(where, raw) {
 function loadCcSmartDevKitConfig(file, pluginVersion = VERSION) {
   if (!existsSync12(file))
     return null;
-  return parseCcSmartDevKitConfig(readFileSync22(file, "utf8"), file, pluginVersion);
+  return parseCcSmartDevKitConfig(readFileSync21(file, "utf8"), file, pluginVersion);
 }
 function parseCcSmartDevKitConfig(text, where, pluginVersion = VERSION) {
   let raw;
@@ -10804,21 +10805,13 @@ function mainCheckoutFrom(list, cwd) {
     throw new GitTimedOutError;
   if (!list.ok)
     throw new Error(`git worktree list failed in ${cwd}: ${list.stderr.trim()}`);
-  const [firstEntry = ""] = list.stdout.split(`
-
-`);
-  const lines = firstEntry.split(`
-`);
-  if (lines.includes("bare"))
+  const [main] = parseWorktreeList(list.stdout);
+  if (main === undefined || main.bare === true)
     return null;
-  const pathLine = lines.find((line) => line.startsWith("worktree "));
-  if (!pathLine)
-    return null;
-  const path = pathLine.slice("worktree ".length);
-  if (!existsSync13(path) || lines.some((line) => line.startsWith("prunable"))) {
-    throw new Error(`The main checkout of the repo at ${cwd} is missing: ${path} was moved or deleted. ` + 'If you moved it, run "git worktree repair" in its new folder.');
+  if (!existsSync13(main.path) || main.prunable) {
+    throw new Error(`The main checkout of the repo at ${cwd} is missing: ${main.path} was moved or deleted. ` + 'If you moved it, run "git worktree repair" in its new folder.');
   }
-  return realpathSync3(path);
+  return realpathSync3(main.path);
 }
 function findMainCheckout(git, cwd) {
   return mainCheckoutFrom(git(["worktree", "list", "--porcelain"]), cwd);
@@ -10912,6 +10905,7 @@ function projectFileFor(checkout) {
 }
 var MIN_GIT_VERSION = "2.31.0", RESOLVE_GIT_TIMEOUT_MS = 5000, GIT_NOT_FOUND = "git was not found, so this project's own values cannot be read. Install git, then try again.", GIT_TIMED_OUT2 = "git did not answer in time", GIT_TIMED_OUT_FIX = "run `git status` in this folder; if that hangs too, fix git first, then run this again", GitTimedOutError, NO_TIME_LEFT;
 var init_locate = __esm(() => {
+  init_git();
   init_config_facts();
   init_git_env();
   GitTimedOutError = class GitTimedOutError extends Error {
@@ -11029,7 +11023,7 @@ var init_resolve = __esm(() => {
 });
 
 // src/jobs/ancestry.ts
-import { readFileSync as readFileSync23 } from "fs";
+import { readFileSync as readFileSync22 } from "fs";
 function parentPidFromStat(stat) {
   const end = stat.lastIndexOf(")");
   if (end === -1)
@@ -11060,7 +11054,7 @@ function ancestorPids(pid, readStat) {
 }
 function readProcStat(pid) {
   try {
-    return readFileSync23(`/proc/${String(pid)}/stat`, "utf8");
+    return readFileSync22(`/proc/${String(pid)}/stat`, "utf8");
   } catch {
     return null;
   }
@@ -11069,7 +11063,7 @@ var MAX_DEPTH = 128;
 var init_ancestry = () => {};
 
 // src/hooks/sessions.ts
-import { existsSync as existsSync14, readdirSync as readdirSync7, readFileSync as readFileSync24, statSync as statSync10 } from "fs";
+import { existsSync as existsSync14, readdirSync as readdirSync7, readFileSync as readFileSync23, statSync as statSync10 } from "fs";
 import { uptime } from "os";
 import { join as join17 } from "path";
 function parseSessionRecord(json) {
@@ -11122,7 +11116,7 @@ function sessionRecordOf(claudeConfigDir, pid, facts = {}) {
   try {
     if (statSync10(file).mtimeMs < bootedAt)
       return null;
-    text = readFileSync24(file, "utf8");
+    text = readFileSync23(file, "utf8");
   } catch (error) {
     if (error.code === "ENOENT")
       return null;
@@ -11159,7 +11153,7 @@ var init_sessions = __esm(() => {
 });
 
 // src/tasks/deploy/files.ts
-import { existsSync as existsSync18, mkdirSync as mkdirSync8, readdirSync as readdirSync9, readFileSync as readFileSync29, rmSync as rmSync4, writeFileSync as writeFileSync2 } from "fs";
+import { existsSync as existsSync18, mkdirSync as mkdirSync8, readdirSync as readdirSync9, readFileSync as readFileSync27, rmSync as rmSync4, writeFileSync as writeFileSync2 } from "fs";
 import { basename as basename5, dirname as dirname12, isAbsolute, join as join24, resolve as resolve6 } from "path";
 function taskFolderIn(checkoutRoot, dir) {
   const target = resolve6(checkoutRoot, dir);
@@ -11196,7 +11190,7 @@ function scanDeployTasks(dir, options) {
         if (!entry.isFile() || !isTaskFile(entry.name))
           continue;
         const file = join24(folder, entry.name);
-        const result = parseDeployTask(readFileSync29(file, "utf8"), file, env);
+        const result = parseDeployTask(readFileSync27(file, "utf8"), file, env);
         if (result.ok)
           found.push(result.task);
         else
@@ -11495,7 +11489,7 @@ import {
   existsSync as existsSync20,
   mkdirSync as mkdirSync9,
   readdirSync as readdirSync10,
-  readFileSync as readFileSync30,
+  readFileSync as readFileSync28,
   rmSync as rmSync5,
   statSync as statSync13,
   writeFileSync as writeFileSync3
@@ -11533,7 +11527,7 @@ function ensureDir(dir) {
 }
 function readLastCheck(files) {
   try {
-    const parsed = JSON.parse(readFileSync30(files.check, "utf8"));
+    const parsed = JSON.parse(readFileSync28(files.check, "utf8"));
     if (typeof parsed?.at !== "string" || Number.isNaN(Date.parse(parsed.at)) || !RESULTS.includes(parsed.result) || typeof parsed.detail !== "string") {
       return null;
     }
@@ -11560,7 +11554,7 @@ function isHeld(files) {
 }
 function heldSince(files) {
   try {
-    const text = readFileSync30(files.hold, "utf8").trim();
+    const text = readFileSync28(files.hold, "utf8").trim();
     return text === "" ? "an unknown time" : text;
   } catch {
     return null;
@@ -11590,7 +11584,7 @@ function appendLogLine(logFile, line, nowMs) {
   ensureDir(join27(logFile, ".."));
   try {
     if (statSync13(logFile).size > LOG_MAX_BYTES) {
-      const text = readFileSync30(logFile, "utf8");
+      const text = readFileSync28(logFile, "utf8");
       const keep = text.slice(text.length - LOG_MAX_BYTES / 2);
       writeFileSync3(logFile, keep.slice(keep.indexOf(`
 `) + 1), { mode: 384 });
@@ -11601,7 +11595,7 @@ function appendLogLine(logFile, line, nowMs) {
 }
 function readHeldMajor(files) {
   try {
-    const parsed = JSON.parse(readFileSync30(files.major, "utf8"));
+    const parsed = JSON.parse(readFileSync28(files.major, "utf8"));
     if (typeof parsed?.version !== "string" || typeof parsed.at !== "string" || parsed.from !== null && typeof parsed.from !== "string" || !Array.isArray(parsed.notes) || !parsed.notes.every((note) => typeof note === "string")) {
       return null;
     }
@@ -11615,7 +11609,7 @@ function clearHeldMajor(files) {
 }
 function readSession2(file) {
   try {
-    const parsed = JSON.parse(readFileSync30(file, "utf8"));
+    const parsed = JSON.parse(readFileSync28(file, "utf8"));
     if (typeof parsed?.pid !== "number" || typeof parsed.start !== "string" || typeof parsed.version !== "string") {
       return null;
     }
@@ -11706,7 +11700,7 @@ function leadHintFrom(personal) {
 var LEAD_HINT_DEFAULT = true;
 
 // src/workflow/resolve.ts
-import { existsSync as existsSync21, readFileSync as readFileSync31 } from "fs";
+import { existsSync as existsSync21, readFileSync as readFileSync29 } from "fs";
 function personalWorkflowFile(paths) {
   return paths.workflowConfigFile;
 }
@@ -11732,7 +11726,7 @@ function loadWorkflow(file) {
     return {};
   let text;
   try {
-    text = readFileSync31(file, "utf8");
+    text = readFileSync29(file, "utf8");
   } catch (error) {
     throw invalidJson(file, error);
   }
@@ -11973,13 +11967,13 @@ var init_resolve2 = __esm(() => {
 });
 
 // src/setup/installed-plugins.ts
-import { existsSync as existsSync35, readFileSync as readFileSync44 } from "fs";
+import { existsSync as existsSync35, readFileSync as readFileSync42 } from "fs";
 function pluginsRecord(installedPluginsFile) {
   if (!existsSync35(installedPluginsFile))
     return null;
   let parsed;
   try {
-    parsed = JSON.parse(readFileSync44(installedPluginsFile, "utf8"));
+    parsed = JSON.parse(readFileSync42(installedPluginsFile, "utf8"));
   } catch {
     return null;
   }
@@ -12237,7 +12231,7 @@ var init_context = __esm(() => {
 
 // src/worktrees/auto-state.ts
 import { createHash as createHash6 } from "crypto";
-import { mkdirSync as mkdirSync18, readFileSync as readFileSync51 } from "fs";
+import { mkdirSync as mkdirSync18, readFileSync as readFileSync49 } from "fs";
 import { dirname as dirname21, join as join43 } from "path";
 function autoCleanLog(stateDir) {
   return join43(stateDir, "worktrees-auto-clean.log");
@@ -12253,7 +12247,7 @@ function autoCleanFiles(stateDir, repo) {
 }
 function readJson2(file, schema) {
   try {
-    const parsed = schema.safeParse(JSON.parse(readFileSync51(file, "utf8")));
+    const parsed = schema.safeParse(JSON.parse(readFileSync49(file, "utf8")));
     return parsed.success ? parsed.data : null;
   } catch {
     return null;
@@ -13157,7 +13151,7 @@ var init_history = __esm(() => {
 });
 
 // src/worktrees/machine-facts.ts
-import { readdirSync as readdirSync16, readFileSync as readFileSync52, readlinkSync as readlinkSync4 } from "fs";
+import { readdirSync as readdirSync16, readFileSync as readFileSync50, readlinkSync as readlinkSync4 } from "fs";
 import { platform } from "os";
 function spawnPrograms(argv) {
   return Bun.spawnSync([...argv], {
@@ -14256,11 +14250,19 @@ init_paths2();
 
 // src/gateway/config.ts
 init_zod();
-init_file_mode();
-init_write();
 import { createHash } from "crypto";
-import { mkdirSync as mkdirSync4, readFileSync as readFileSync6, statSync as statSync4 } from "fs";
+import { mkdirSync as mkdirSync4, statSync as statSync4 } from "fs";
 import { dirname as dirname4 } from "path";
+
+// src/error-message.ts
+function messageOf(error) {
+  return error instanceof Error ? error.message : String(error);
+}
+
+// src/gateway/config.ts
+init_file_mode();
+init_user_json();
+init_write();
 
 // src/gateway/history.ts
 init_file_mode();
@@ -15081,10 +15083,6 @@ function judgeStandInState(config) {
   }
   return fallbackOn(config, JUDGE_SLOT) ? "ready" : "off";
 }
-function messageOf(error) {
-  return error instanceof Error ? error.message : String(error);
-}
-
 class ConfigError extends Error {
   name = "ConfigError";
 }
@@ -15127,7 +15125,7 @@ function loadConfigFile(path, platform = hostPlatform()) {
   }
   let raw;
   try {
-    raw = JSON.parse(readFileSync6(path, "utf8"));
+    raw = readUserJson(path);
   } catch (error) {
     throw new ConfigError(`${path} is not valid JSON. Fix it by hand.`, { cause: error });
   }
@@ -19029,7 +19027,7 @@ init_detached();
 // src/jobs/limits.ts
 init_names();
 import { spawnSync } from "child_process";
-import { readdirSync as readdirSync5, readFileSync as readFileSync14 } from "fs";
+import { readdirSync as readdirSync5, readFileSync as readFileSync13 } from "fs";
 import { cpus } from "os";
 
 // src/machine/machine.ts
@@ -19157,7 +19155,7 @@ init_names();
 init_lock();
 init_managed_json();
 init_user_json();
-import { readFileSync as readFileSync13 } from "fs";
+import { readFileSync as readFileSync12 } from "fs";
 import { join as join9 } from "path";
 var HEAVY_SLOTS = 1;
 var MAX_HEAVY_SLOTS = 8;
@@ -19175,7 +19173,7 @@ function readHeavyLimit(home) {
   const file = jobsPaths(home).configFile;
   let text;
   try {
-    text = readFileSync13(file, "utf8");
+    text = readFileSync12(file, "utf8");
   } catch (error) {
     if (error.code === "ENOENT")
       return { slots: HEAVY_SLOTS, source: "default" };
@@ -19202,7 +19200,7 @@ function readLimitSettings(home) {
   };
   let raw;
   try {
-    raw = parseUserJson(readFileSync13(file, "utf8"));
+    raw = parseUserJson(readFileSync12(file, "utf8"));
   } catch (error) {
     if (error.code === "ENOENT") {
       return { ok: true, settings: defaults, source: "default" };
@@ -19242,7 +19240,7 @@ var SYSTEMD_TIMEOUT_MS = 1e4;
 var JOBS_SLICE = `${COMMAND.replaceAll("-", "_")}_jobs.slice`;
 var realReadText = (path) => {
   try {
-    return readFileSync14(path, "utf8");
+    return readFileSync13(path, "utf8");
   } catch {
     return null;
   }
@@ -19403,7 +19401,7 @@ init_paths2();
 
 // src/mcp/records.ts
 init_write();
-import { existsSync as existsSync7, readFileSync as readFileSync15 } from "fs";
+import { existsSync as existsSync7, readFileSync as readFileSync14 } from "fs";
 import { join as join10 } from "path";
 var RECORD_FILE = "mcp-servers.json";
 function mcpRecordsFile(stateDir) {
@@ -19418,7 +19416,7 @@ function isRecord(value) {
 function readMcpRecords(stateDir, file = mcpRecordsFile(stateDir)) {
   if (!existsSync7(file))
     return {};
-  const parsed = JSON.parse(readFileSync15(file, "utf8"));
+  const parsed = JSON.parse(readFileSync14(file, "utf8"));
   const servers = parsed?.servers;
   if (typeof servers !== "object" || servers === null || !Object.values(servers).every((entry) => isRecord(entry))) {
     throw new Error(`Invalid ${file}: expected { "servers": { <name>: { json, at } } }`);
@@ -19429,12 +19427,12 @@ function readMcpRecords(stateDir, file = mcpRecordsFile(stateDir)) {
 // src/mcp/register.ts
 init_paths2();
 init_user_json();
-import { existsSync as existsSync8, readFileSync as readFileSync16 } from "fs";
+import { existsSync as existsSync8, readFileSync as readFileSync15 } from "fs";
 import { dirname as dirname6, join as join11, resolve as resolve2 } from "path";
 function readUserServers(file) {
   let text;
   try {
-    text = readFileSync16(file, "utf8");
+    text = readFileSync15(file, "utf8");
   } catch (error) {
     return error.code === "ENOENT" ? {} : null;
   }
@@ -19526,7 +19524,7 @@ import {
   existsSync as existsSync10,
   lstatSync as lstatSync2,
   readdirSync as readdirSync6,
-  readFileSync as readFileSync18,
+  readFileSync as readFileSync17,
   rmdirSync,
   rmSync as rmSync2,
   statSync as statSync6
@@ -19550,7 +19548,7 @@ init_build_info();
 import { basename as basename2 } from "path";
 
 // src/setup/marketplace-access.ts
-import { existsSync as existsSync9, readFileSync as readFileSync17 } from "fs";
+import { existsSync as existsSync9, readFileSync as readFileSync16 } from "fs";
 import { join as join12 } from "path";
 var ACCESS_TIMEOUT_MS = 1e4;
 function marketplaceSource(knownMarketplacesFile, name, env = process.env) {
@@ -19558,7 +19556,7 @@ function marketplaceSource(knownMarketplacesFile, name, env = process.env) {
     return { kind: "missing" };
   let known;
   try {
-    known = JSON.parse(readFileSync17(knownMarketplacesFile, "utf8"));
+    known = JSON.parse(readFileSync16(knownMarketplacesFile, "utf8"));
   } catch {
     return { kind: "missing" };
   }
@@ -19772,7 +19770,7 @@ function knownMarketplaceEntry(knownMarketplacesFile, name) {
   if (!existsSync9(knownMarketplacesFile))
     return null;
   try {
-    const known = JSON.parse(readFileSync17(knownMarketplacesFile, "utf8"));
+    const known = JSON.parse(readFileSync16(knownMarketplacesFile, "utf8"));
     const entry = known?.[name];
     return typeof entry === "object" && entry !== null && !Array.isArray(entry) ? entry : null;
   } catch {
@@ -19795,11 +19793,11 @@ function pluginFolderIn(marketplaceJson, plugin) {
 function marketplaceCopyVersion(location, plugin) {
   let folder = "plugin";
   try {
-    folder = pluginFolderIn(readFileSync17(join12(location, ".claude-plugin", "marketplace.json"), "utf8"), plugin) ?? folder;
+    folder = pluginFolderIn(readFileSync16(join12(location, ".claude-plugin", "marketplace.json"), "utf8"), plugin) ?? folder;
   } catch {}
   const manifest = join12(location, folder, ".claude-plugin", "plugin.json");
   try {
-    const version = JSON.parse(readFileSync17(manifest, "utf8"))?.version;
+    const version = JSON.parse(readFileSync16(manifest, "utf8"))?.version;
     return { manifest, version: typeof version === "string" ? version : null };
   } catch {
     return { manifest, version: null };
@@ -19900,7 +19898,7 @@ function mentions(value, text) {
 function registrationsNaming(userConfigFile, file, takenBack) {
   let text;
   try {
-    text = readFileSync18(userConfigFile, "utf8");
+    text = readFileSync17(userConfigFile, "utf8");
   } catch (error) {
     return error.code === "ENOENT" ? [] : null;
   }
@@ -20008,7 +20006,7 @@ function retiredChecks(paths) {
 init_file_mode();
 init_managed_json();
 init_user_json();
-import { existsSync as existsSync11, readFileSync as readFileSync19, statSync as statSync7 } from "fs";
+import { existsSync as existsSync11, readFileSync as readFileSync18, statSync as statSync7 } from "fs";
 var TAVILY_ENV_KEY = "TAVILY_API_KEY";
 var TAVILY_KEY_PATH = ["env", TAVILY_ENV_KEY];
 function settingsEnvValue(file, name) {
@@ -20055,7 +20053,7 @@ function readKeyFile(paths, platform) {
   let text;
   try {
     mode = statSync7(paths.tavilyKeyFile).mode & 4095;
-    text = readFileSync19(paths.tavilyKeyFile, "utf8");
+    text = readFileSync18(paths.tavilyKeyFile, "utf8");
   } catch (error) {
     return {
       source: "none",
@@ -20213,7 +20211,7 @@ init_git();
 init_config();
 init_resolve();
 import { createHash as createHash8 } from "crypto";
-import { existsSync as existsSync47, mkdirSync as mkdirSync20, readFileSync as readFileSync60 } from "fs";
+import { existsSync as existsSync47, mkdirSync as mkdirSync20, readFileSync as readFileSync58 } from "fs";
 import { basename as basename13, dirname as dirname23, join as join55, relative as relative3 } from "path";
 
 // src/sessions/command.ts
@@ -20222,7 +20220,7 @@ import {
   existsSync as existsSync15,
   openSync as openSync5,
   readdirSync as readdirSync8,
-  readFileSync as readFileSync26,
+  readFileSync as readFileSync25,
   readSync as readSync2,
   rmSync as rmSync3,
   statSync as statSync12
@@ -20535,7 +20533,7 @@ init_write();
 
 // src/sessions/finished.ts
 init_zod();
-import { readFileSync as readFileSync25 } from "fs";
+import { readFileSync as readFileSync24 } from "fs";
 import { join as join19 } from "path";
 var FINISHED_SESSION_AGE_MS = 24 * 60 * 60 * 1000;
 var agentSchema = object({
@@ -20594,7 +20592,7 @@ function sessionTerminalAt(paths, row) {
   if (!/^[0-9a-f]{8}$/.test(row.id))
     return null;
   try {
-    const parsed = terminalSchema.safeParse(JSON.parse(readFileSync25(join19(paths.claudeConfigDir, "jobs", row.id, "state.json"), "utf8")));
+    const parsed = terminalSchema.safeParse(JSON.parse(readFileSync24(join19(paths.claudeConfigDir, "jobs", row.id, "state.json"), "utf8")));
     if (!parsed.success || parsed.data.sessionId !== row.sessionId || parsed.data.state !== row.state)
       return null;
     return Math.max(Date.parse(parsed.data.lastTerminalAt), Date.parse(parsed.data.updatedAt));
@@ -20829,12 +20827,13 @@ init_write();
 // src/update/retired-repos.ts
 init_build_info();
 init_paths2();
-import { existsSync as existsSync17, readFileSync as readFileSync28 } from "fs";
+import { existsSync as existsSync17, readFileSync as readFileSync26 } from "fs";
 import { join as join23, relative } from "path";
 
 // src/hooks/settings-hooks.ts
 init_names();
-import { existsSync as existsSync16, readFileSync as readFileSync27 } from "fs";
+init_user_json();
+import { existsSync as existsSync16 } from "fs";
 import { join as join22 } from "path";
 var RETIRED_ENGINE_HOOKS = [
   "worktree-create",
@@ -20865,7 +20864,7 @@ function hooksOf(file) {
   if (!existsSync16(file))
     return null;
   try {
-    const parsed = JSON.parse(readFileSync27(file, "utf8"));
+    const parsed = readUserJson(file);
     if (typeof parsed !== "object" || parsed === null)
       return null;
     const hooks = parsed.hooks;
@@ -20913,9 +20912,6 @@ function allWiredHandlers(file) {
 init_config();
 init_resolve();
 init_user_json();
-function messageOf2(error) {
-  return error instanceof Error ? error.message : String(error);
-}
 function checkoutFold(checkout) {
   if (checkout === null)
     return null;
@@ -20945,9 +20941,9 @@ function retiredPartsOf(repo, mainCheckout = null) {
   let error = null;
   if (existsSync17(config)) {
     try {
-      fields = retiredFieldsOf(parseUserJson(readFileSync28(config, "utf8"))).map((field) => `worktrees.${field}`);
+      fields = retiredFieldsOf(parseUserJson(readFileSync26(config, "utf8"))).map((field) => `worktrees.${field}`);
     } catch (cause) {
-      error = messageOf2(cause);
+      error = messageOf(cause);
     }
   }
   const engineFiles = projectSettingsFiles(repo).filter((file) => allWiredHandlers(file).some((handler) => retiredEngineHookOf(handler.command) !== null)).map((file) => relative(repo, file));
@@ -20982,6 +20978,49 @@ function retiredRepoLine(found, home) {
 }
 function retiredRepoLines(paths, env) {
   return reposWithRetiredParts(paths, env).map((found) => retiredRepoLine(found, paths.home));
+}
+
+// src/hooks/gh.ts
+var GH_TIMEOUT_MS = 1e4;
+function ghMissing(env) {
+  try {
+    return Bun.which("gh", { PATH: env.PATH ?? "" }) === null;
+  } catch {
+    return false;
+  }
+}
+function ghSpawnOptions({ env, folder, timeoutMs }) {
+  return {
+    ...folder === undefined ? {} : { cwd: folder },
+    env,
+    stdout: "pipe",
+    stderr: "pipe",
+    timeout: timeoutMs,
+    windowsHide: true
+  };
+}
+function ghEnded(code, signal, out, err) {
+  if (signal !== null && signal !== undefined) {
+    const kind = signal === "SIGTERM" ? "timeout" : "failed";
+    return { code: null, err: err.trim(), kind, out, signal };
+  }
+  return { code, err: err.trim(), kind: code === 0 ? "ok" : "failed", out };
+}
+function ghNotStarted(error, env) {
+  return {
+    code: null,
+    err: error instanceof Error ? error.message : String(error),
+    kind: ghMissing(env) ? "missing" : "failed",
+    out: ""
+  };
+}
+function runGhSync(args, call) {
+  try {
+    const run = Bun.spawnSync(["gh", ...args], { ...ghSpawnOptions(call), stdin: "ignore" });
+    return ghEnded(run.exitCode, run.signalCode, run.stdout.toString(), run.stderr.toString());
+  } catch (error) {
+    return ghNotStarted(error, call.env);
+  }
 }
 
 // src/workflow/merge-check.ts
@@ -22085,40 +22124,20 @@ async function measure(checkout, { head, branch, base }, records, limits, git, o
 
 // src/workflow/merge-check.ts
 init_reviews();
-var GH_TIMEOUT_MS = 1e4;
-var runGh = async (args, { folder, env, input, timeoutMs }) => {
+var runGh = async (args, call) => {
   try {
     const child = Bun.spawn(["gh", ...args], {
-      ...folder === undefined ? {} : { cwd: folder },
-      env,
-      stdin: input === undefined ? "ignore" : new Blob([input]),
-      stdout: "pipe",
-      stderr: "pipe",
-      timeout: timeoutMs,
-      windowsHide: true
+      ...ghSpawnOptions(call),
+      stdin: call.input === undefined ? "ignore" : new Blob([call.input])
     });
     const [out, err] = await Promise.all([
       new Response(child.stdout).text(),
       new Response(child.stderr).text(),
       child.exited
     ]);
-    if (child.signalCode !== null) {
-      const kind = child.signalCode === "SIGTERM" ? "timeout" : "failed";
-      return { code: null, err: err.trim(), kind, out, signal: child.signalCode };
-    }
-    return {
-      code: child.exitCode,
-      err: err.trim(),
-      kind: child.exitCode === 0 ? "ok" : "failed",
-      out
-    };
+    return ghEnded(child.exitCode, child.signalCode, out, err);
   } catch (error) {
-    return {
-      code: null,
-      err: error instanceof Error ? error.message : String(error),
-      kind: Bun.which("gh", { PATH: env.PATH ?? "" }) === null ? "missing" : "failed",
-      out: ""
-    };
+    return ghNotStarted(error, call.env);
   }
 };
 var NO_REQUIRED_CHECKS = /^no (?:required )?checks reported on the '.*' branch$/;
@@ -22296,13 +22315,6 @@ function policyUnread(branch, why, policy = "merge policy") {
 }
 function workflowUnread(error) {
   return `the workflow settings cannot be read (${error instanceof Error ? error.message : String(error)})`;
-}
-function ghMissing(env) {
-  try {
-    return Bun.which("gh", { PATH: env.PATH ?? "" }) === null;
-  } catch {
-    return false;
-  }
 }
 async function ghStdout(args, folder, env, timeoutMs, run) {
   return await run(args, { env, folder, timeoutMs });
@@ -22637,7 +22649,7 @@ init_schema();
 // src/workflow/write.ts
 init_paths2();
 init_config();
-import { mkdirSync as mkdirSync11, readFileSync as readFileSync32 } from "fs";
+import { mkdirSync as mkdirSync11, readFileSync as readFileSync30 } from "fs";
 import { dirname as dirname13 } from "path";
 init_resolve();
 init_managed_json();
@@ -22739,7 +22751,7 @@ function writePersonalSetting(paths, key, value) {
 function writeProjectSetting(cwd, key, value, env = process.env) {
   const leaf = projectLeaf(key, value);
   const file = projectFile(cwd, env);
-  const edit = editProjectLeaf(readFileSync32(file, "utf8"), file, leaf, value);
+  const edit = editProjectLeaf(readFileSync30(file, "utf8"), file, leaf, value);
   if (!edit.changed)
     return edit.line;
   backupFile(cliPaths(env).stateDir, file);
@@ -22881,14 +22893,14 @@ init_schema();
 
 // src/portal/facts.ts
 import { createHash as createHash7 } from "crypto";
-import { readFileSync as readFileSync56 } from "fs";
+import { readFileSync as readFileSync54 } from "fs";
 import { basename as basename12, join as join51 } from "path";
 
 // src/browser/setup.ts
 init_build_info();
 init_managed_json();
 init_write();
-import { existsSync as existsSync22, mkdirSync as mkdirSync12, readdirSync as readdirSync11, readFileSync as readFileSync33 } from "fs";
+import { existsSync as existsSync22, mkdirSync as mkdirSync12, readdirSync as readdirSync11, readFileSync as readFileSync31 } from "fs";
 import { join as join30 } from "path";
 var MAC_EXTERNAL_EXTENSIONS = [
   "Library",
@@ -22974,7 +22986,7 @@ function windowsQueryArgv() {
 }
 function readFileSafely(file) {
   try {
-    return readFileSync33(file, "utf8");
+    return readFileSync31(file, "utf8");
   } catch {
     return null;
   }
@@ -23151,7 +23163,7 @@ import {
   existsSync as existsSync25,
   mkdirSync as mkdirSync16,
   mkdtempSync as mkdtempSync4,
-  readFileSync as readFileSync37,
+  readFileSync as readFileSync35,
   realpathSync as realpathSync4,
   rmSync as rmSync8,
   writeFileSync as writeFileSync5
@@ -23169,7 +23181,7 @@ import { join as join31 } from "path";
 // src/hooks/jsonl-log.ts
 init_write();
 init_state();
-import { appendFileSync as appendFileSync2, mkdirSync as mkdirSync13, readFileSync as readFileSync34, statSync as statSync14 } from "fs";
+import { appendFileSync as appendFileSync2, mkdirSync as mkdirSync13, readFileSync as readFileSync32, statSync as statSync14 } from "fs";
 import { dirname as dirname14 } from "path";
 function cutBack(file) {
   let size;
@@ -23180,7 +23192,7 @@ function cutBack(file) {
   }
   if (size <= LOG_MAX_BYTES)
     return;
-  const text = readFileSync34(file, "utf8");
+  const text = readFileSync32(file, "utf8");
   const keep = text.slice(text.length - LOG_MAX_BYTES / 2);
   atomicWrite(file, keep.slice(keep.indexOf(`
 `) + 1), 384);
@@ -23210,12 +23222,12 @@ import {
   existsSync as existsSync23,
   mkdirSync as mkdirSync14,
   readdirSync as readdirSync12,
-  readFileSync as readFileSync35,
+  readFileSync as readFileSync33,
   statSync as statSync15,
   unlinkSync as unlinkSync4
 } from "fs";
 import { dirname as dirname15, join as join32 } from "path";
-var PARSER_FINGERPRINT = "cf83d28a9adcc460bb6ed14ca8396360e3e093bc64ef4a44a7d36ab2374eb526";
+var PARSER_FINGERPRINT = "1fe75b2f95408e56c9ced0e05df3707f931e4a6b8d2641c848d57436130e8457";
 var CHECKED_DIR = "checked";
 var CHECKED_CACHE_LIMIT = 64;
 var CHECKED_FILE_MAX_BYTES = 256 * 1024;
@@ -23247,7 +23259,7 @@ ${kind}
 }
 function readEntry(file, key, kind) {
   try {
-    const entry = JSON.parse(readFileSync35(file, "utf8"));
+    const entry = JSON.parse(readFileSync33(file, "utf8"));
     if (entry?.format !== ENTRY_FORMAT || entry.key !== key || entry.kind !== kind)
       return null;
     const { value } = entry;
@@ -23291,7 +23303,7 @@ function writeEntry(dir, key, kind, value) {
 async function loadCheckedFile(file, kind, { paths }) {
   if (!existsSync23(file))
     return { ok: true, value: null, fact: "none" };
-  const bytes = readFileSync35(file);
+  const bytes = readFileSync33(file);
   const cacheable = bytes.length <= CHECKED_FILE_MAX_BYTES;
   const dir = join32(paths.stateDir, CHECKED_DIR);
   const key = checkedKey(PARSER_FINGERPRINT, kind, bytes);
@@ -23410,7 +23422,7 @@ init_write();
 init_zod();
 init_names();
 init_write();
-import { existsSync as existsSync24, mkdirSync as mkdirSync15, readFileSync as readFileSync36 } from "fs";
+import { existsSync as existsSync24, mkdirSync as mkdirSync15, readFileSync as readFileSync34 } from "fs";
 import { join as join33 } from "path";
 function cacheMissCause(miss) {
   return miss.causes === null ? "cause not known" : miss.causes.join(", ");
@@ -23427,7 +23439,7 @@ function readCacheMissRecord(stateDir) {
   if (!existsSync24(file))
     return null;
   try {
-    const parsed = recordSchema.safeParse(JSON.parse(readFileSync36(file, "utf8")));
+    const parsed = recordSchema.safeParse(JSON.parse(readFileSync34(file, "utf8")));
     return parsed.success ? parsed.data : null;
   } catch {
     return null;
@@ -23445,7 +23457,7 @@ function liveRecordFile(stateDir) {
 }
 function readLiveRecord(stateDir) {
   try {
-    const parsed = JSON.parse(readFileSync37(liveRecordFile(stateDir), "utf8"));
+    const parsed = JSON.parse(readFileSync35(liveRecordFile(stateDir), "utf8"));
     return typeof parsed.claudeCode === "string" && typeof parsed.plugin === "string" && typeof parsed.passedAt === "string" ? { claudeCode: parsed.claudeCode, plugin: parsed.plugin, passedAt: parsed.passedAt } : null;
   } catch {
     return null;
@@ -23458,7 +23470,7 @@ var LIVE_PROMPT = `Call the EnterWorktree tool with name "${LIVE_NAME}". Then ru
 function readLog(file) {
   if (!existsSync25(file))
     return [];
-  return readFileSync37(file, "utf8").split(`
+  return readFileSync35(file, "utf8").split(`
 `).filter((line) => line.trim() !== "").flatMap((line) => {
     try {
       return [JSON.parse(line)];
@@ -23592,7 +23604,7 @@ function runLiveCheck(paths, env, deps) {
 // src/cli/usage-window.ts
 init_zod();
 init_write();
-import { existsSync as existsSync26, readFileSync as readFileSync38 } from "fs";
+import { existsSync as existsSync26, readFileSync as readFileSync36 } from "fs";
 import { join as join35 } from "path";
 var WINDOW_SPAN_MS = 5 * 60 * 60000;
 var SEVEN_DAY_SPAN_MS = 7 * 24 * 60 * 60000;
@@ -23609,7 +23621,7 @@ function readStored(file) {
   if (!existsSync26(file))
     return null;
   try {
-    const parsed = storedSchema.safeParse(JSON.parse(readFileSync38(file, "utf8")));
+    const parsed = storedSchema.safeParse(JSON.parse(readFileSync36(file, "utf8")));
     return parsed.success ? parsed.data : null;
   } catch {
     return null;
@@ -23639,7 +23651,7 @@ function readUsageWindows(paths, nowMs) {
 init_zod();
 init_build_info();
 init_paths2();
-import { existsSync as existsSync33, readdirSync as readdirSync13, readFileSync as readFileSync42 } from "fs";
+import { existsSync as existsSync33, readdirSync as readdirSync13, readFileSync as readFileSync40 } from "fs";
 init_lock();
 init_managed_json();
 init_write();
@@ -24081,7 +24093,7 @@ import { resolve as resolve8 } from "path";
 
 // src/setup/managed-line.ts
 init_write();
-import { existsSync as existsSync28, readFileSync as readFileSync39 } from "fs";
+import { existsSync as existsSync28, readFileSync as readFileSync37 } from "fs";
 function renderWithLine(current, line) {
   const text = current === "" || current.endsWith(`
 `) ? current : `${current}
@@ -24092,7 +24104,7 @@ function renderWithLine(current, line) {
 function writeRendered(file, stateDir, render, options) {
   const target = realTarget(file);
   return retryOnConcurrentChange(target, () => {
-    const current = existsSync28(target) ? readFileSync39(target, "utf8") : null;
+    const current = existsSync28(target) ? readFileSync37(target, "utf8") : null;
     const { removed, text } = render(current ?? "");
     if (current === null && text === "") {
       return { backup: null, outcome: "unchanged", removed: removed ?? [] };
@@ -24114,7 +24126,7 @@ function applyManagedLine(options) {
 }
 
 // src/gateway/project-state.ts
-init_git_env();
+init_git();
 init_resolve();
 import { existsSync as existsSync30, realpathSync as realpathSync5, statSync as statSync16 } from "fs";
 import { join as join36, resolve as resolve7 } from "path";
@@ -24124,7 +24136,7 @@ init_build_info();
 init_managed_json();
 init_user_json();
 init_write();
-import { existsSync as existsSync29, readFileSync as readFileSync40 } from "fs";
+import { existsSync as existsSync29, readFileSync as readFileSync38 } from "fs";
 
 // src/gateway/model-picker.ts
 init_managed_json();
@@ -24232,7 +24244,7 @@ function isJsonObject7(value) {
 function readSettings(path) {
   if (!existsSync29(path))
     return {};
-  const text = readFileSync40(path, "utf8");
+  const text = readFileSync38(path, "utf8");
   if (text.trim() === "")
     return {};
   let parsed;
@@ -24406,41 +24418,18 @@ function clearGatewayBaseUrl(options) {
 }
 
 // src/gateway/project-state.ts
-function trackedArgv() {
-  return ["git", "ls-files", "--error-unmatch", "--", `.claude/${PERSONAL_FILE}`];
+function trackedArgs() {
+  return ["ls-files", "--error-unmatch", "--", `.claude/${PERSONAL_FILE}`];
 }
 function trackedFromExit(code) {
   return code === 0 ? true : code === 1 ? false : null;
 }
 function personalTracked(mainCheckout) {
-  try {
-    const result = Bun.spawnSync(trackedArgv(), {
-      cwd: mainCheckout,
-      env: gitEnv(process.env),
-      stderr: "ignore",
-      stdout: "ignore",
-      timeout: RESOLVE_GIT_TIMEOUT_MS
-    });
-    return trackedFromExit(result.exitCode);
-  } catch {
-    return null;
-  }
+  return trackedFromExit(runGit(mainCheckout, trackedArgs(), process.env, RESOLVE_GIT_TIMEOUT_MS).code);
 }
 async function personalTrackedAsync(mainCheckout) {
-  try {
-    const child = Bun.spawn(trackedArgv(), {
-      cwd: mainCheckout,
-      env: gitEnv(process.env),
-      stderr: "ignore",
-      stdin: "ignore",
-      stdout: "ignore",
-      timeout: RESOLVE_GIT_TIMEOUT_MS
-    });
-    const code = await child.exited;
-    return child.signalCode === null ? trackedFromExit(code) : null;
-  } catch {
-    return null;
-  }
+  const run = await runGitAsync(mainCheckout, trackedArgs(), process.env, RESOLVE_GIT_TIMEOUT_MS);
+  return trackedFromExit(run.code);
 }
 var PERSONAL_FILE = "settings.local.json";
 var PERSONAL_EXCLUDE_LINE = `/.claude/${PERSONAL_FILE}`;
@@ -24450,53 +24439,24 @@ function personalFileOf(checkout) {
 function ownPersonalFileOf(folder) {
   return join36(folder, ".claude", PERSONAL_FILE);
 }
-function linkedWorktreePaths(listing, mainCheckout) {
-  const main = realFolder(mainCheckout);
-  const paths = [];
-  for (const block of listing.split(`
-
-`)) {
-    const lines = block.split(`
-`);
-    const path = lines.find((line) => line.startsWith("worktree "))?.slice("worktree ".length);
-    if (path === undefined || lines.includes("bare") || realFolder(path) === main)
-      continue;
-    paths.push(path);
-  }
-  return paths;
-}
+var WORKTREE_LIST_ARGS = ["worktree", "list", "--porcelain"];
 function ownFilesOf(paths) {
   return paths.map((path) => ownPersonalFileOf(path)).filter((file) => existsSync30(file)).map((file) => settingsFileState(file, "personal"));
 }
-function linkedWorktreeFilesOf(mainCheckout) {
-  try {
-    const result = Bun.spawnSync(["git", "worktree", "list", "--porcelain"], {
-      cwd: mainCheckout,
-      env: gitEnv(process.env),
-      stderr: "ignore",
-      stdout: "pipe",
-      timeout: RESOLVE_GIT_TIMEOUT_MS
-    });
-    return result.exitCode === 0 ? ownFilesOf(linkedWorktreePaths(result.stdout.toString(), mainCheckout)) : [];
-  } catch {
+function linkedWorktreeFilesIn(listing, mainCheckout) {
+  if (!listing.ok)
     return [];
-  }
+  const main = realFolder(mainCheckout);
+  const linked = parseWorktreeList(listing.out).filter((worktree) => worktree.bare !== true && realFolder(worktree.path) !== main);
+  return ownFilesOf(linked.map((worktree) => worktree.path));
+}
+function linkedWorktreeFilesOf(mainCheckout) {
+  const listing = runGit(mainCheckout, WORKTREE_LIST_ARGS, process.env, RESOLVE_GIT_TIMEOUT_MS);
+  return linkedWorktreeFilesIn(listing, mainCheckout);
 }
 async function linkedWorktreeFilesOfAsync(mainCheckout) {
-  try {
-    const child = Bun.spawn(["git", "worktree", "list", "--porcelain"], {
-      cwd: mainCheckout,
-      env: gitEnv(process.env),
-      stderr: "ignore",
-      stdin: "ignore",
-      stdout: "pipe",
-      timeout: RESOLVE_GIT_TIMEOUT_MS
-    });
-    const [listing, code] = await Promise.all([new Response(child.stdout).text(), child.exited]);
-    return code === 0 && child.signalCode === null ? ownFilesOf(linkedWorktreePaths(listing, mainCheckout)) : [];
-  } catch {
-    return [];
-  }
+  const listing = await runGitAsync(mainCheckout, WORKTREE_LIST_ARGS, process.env, RESOLVE_GIT_TIMEOUT_MS);
+  return linkedWorktreeFilesIn(listing, mainCheckout);
 }
 function gatewayCopiesAmong(files) {
   return files.filter((file) => file.problem === null && file.url !== null && baseUrlPointsAtGateway(file.url));
@@ -25719,7 +25679,7 @@ async function createOmnirouteKey(options) {
 init_build_info();
 init_paths2();
 init_write();
-import { existsSync as existsSync32, readFileSync as readFileSync41, rmSync as rmSync9 } from "fs";
+import { existsSync as existsSync32, readFileSync as readFileSync39, rmSync as rmSync9 } from "fs";
 import { basename as basename6, dirname as dirname17, join as join37 } from "path";
 var UNIT_NAME = "cc-smart-dev-kit-router.service";
 var SOCKET_NAME = "cc-smart-dev-kit-router.socket";
@@ -25850,7 +25810,7 @@ async function installRouter(options) {
   const { service } = options;
   const { listenerUp } = await checkRouterPort(options);
   const short = (path) => tildify(path, options.home);
-  const copyText = readFileSync41(options.bundle, "utf8");
+  const copyText = readFileSync39(options.bundle, "utf8");
   const definitions = service.definitions(options);
   const marker = restartPendingFile(options.stateDir);
   const write = (file, text, dryRun) => writeManagedFile(file, text, {
@@ -25983,7 +25943,7 @@ function systemdService(options) {
       if (!plan.listenerUp) {
         return plan.outcomes.socket === "created" ? MOVE_WARNING : SOCKET_STOPPED_WARNING;
       }
-      const oldPort = existsSync32(options.socketPath) ? socketPort(readFileSync41(options.socketPath, "utf8")) : null;
+      const oldPort = existsSync32(options.socketPath) ? socketPort(readFileSync39(options.socketPath, "utf8")) : null;
       return oldPort !== null && oldPort !== input.port ? PORT_WARNING : SOCKET_CHANGED_WARNING;
     },
     running(runner) {
@@ -27000,7 +26960,7 @@ async function testWorkerTargets(ctx, config) {
 function dropFallbackRecord(statePath, slot) {
   let state;
   try {
-    state = parseLimitState(readFileSync42(statePath, "utf8"));
+    state = parseLimitState(readFileSync40(statePath, "utf8"));
   } catch {
     return;
   }
@@ -27012,7 +26972,7 @@ function dropFallbackRecord(statePath, slot) {
 function dropChecksDownRecord(statePath, why) {
   let state;
   try {
-    state = parseLimitState(readFileSync42(statePath, "utf8"));
+    state = parseLimitState(readFileSync40(statePath, "utf8"));
   } catch {
     return;
   }
@@ -27977,7 +27937,7 @@ init_build_info();
 init_paths2();
 init_managed_json();
 init_write();
-import { existsSync as existsSync34, readFileSync as readFileSync43 } from "fs";
+import { existsSync as existsSync34, readFileSync as readFileSync41 } from "fs";
 
 // src/gateway/claude-defaults.ts
 init_build_info();
@@ -28087,7 +28047,7 @@ async function gatewayChecks(options) {
   }
   if (!existsSync34(paths.routerCopy)) {
     checks.push({ ok: false, text: `no router copy at ${short(paths.routerCopy)}`, fix: SETUP });
-  } else if (existsSync34(options.bundle) && readFileSync43(paths.routerCopy, "utf8") !== readFileSync43(options.bundle, "utf8")) {
+  } else if (existsSync34(options.bundle) && readFileSync41(paths.routerCopy, "utf8") !== readFileSync41(options.bundle, "utf8")) {
     checks.push({
       ok: false,
       text: `the router copy ${short(paths.routerCopy)} is not this plugin version's router`,
@@ -28397,7 +28357,7 @@ async function socketCheck(options, port) {
       state: "other"
     };
   }
-  if (readFileSync43(paths.routerSocketFile, "utf8") !== renderSocket(port)) {
+  if (readFileSync41(paths.routerSocketFile, "utf8") !== renderSocket(port)) {
     return {
       check: {
         ok: false,
@@ -28561,7 +28521,7 @@ function companionCheck(companion, state) {
 // src/omniroute/commands.ts
 init_build_info();
 init_paths2();
-import { existsSync as existsSync38, readFileSync as readFileSync46 } from "fs";
+import { existsSync as existsSync38, readFileSync as readFileSync44 } from "fs";
 init_lock();
 init_write();
 
@@ -28571,7 +28531,7 @@ import {
   constants as constants2,
   existsSync as existsSync37,
   readdirSync as readdirSync14,
-  readFileSync as readFileSync45,
+  readFileSync as readFileSync43,
   realpathSync as realpathSync6
 } from "fs";
 import { dirname as dirname19, join as join39 } from "path";
@@ -28649,7 +28609,7 @@ function userUnits(dir) {
     const file = join39(dir, name);
     let argv;
     try {
-      argv = unitExecStart(readFileSync45(file, "utf8"));
+      argv = unitExecStart(readFileSync43(file, "utf8"));
     } catch {
       continue;
     }
@@ -28660,7 +28620,7 @@ function userUnits(dir) {
 }
 function versionOf(folder, name) {
   try {
-    const manifest = JSON.parse(readFileSync45(join39(folder, "package.json"), "utf8"));
+    const manifest = JSON.parse(readFileSync43(join39(folder, "package.json"), "utf8"));
     const wanted = manifest;
     if (wanted.name !== name || typeof wanted.version !== "string")
       return null;
@@ -28904,7 +28864,7 @@ function parseState(text) {
 }
 function readState(file) {
   try {
-    return parseState(readFileSync46(file, "utf8")) ?? emptyState();
+    return parseState(readFileSync44(file, "utf8")) ?? emptyState();
   } catch {
     return emptyState();
   }
@@ -28918,7 +28878,7 @@ function stateFile(paths) {
 }
 function readOrNull(path) {
   try {
-    return readFileSync46(path, "utf8");
+    return readFileSync44(path, "utf8");
   } catch {
     return null;
   }
@@ -29275,11 +29235,11 @@ init_resolve();
 
 // src/update/apply.ts
 init_build_info();
-import { existsSync as existsSync39, readFileSync as readFileSync49 } from "fs";
+import { existsSync as existsSync39, readFileSync as readFileSync47 } from "fs";
 import { join as join41 } from "path";
 
 // src/build-info/manifest.ts
-import { readFileSync as readFileSync47 } from "fs";
+import { readFileSync as readFileSync45 } from "fs";
 function readDependencies(manifestFile, raw) {
   if (raw === undefined)
     return [];
@@ -29301,7 +29261,7 @@ function readDependencies(manifestFile, raw) {
   });
 }
 function readManifestDependencies(manifestFile) {
-  const manifest = JSON.parse(readFileSync47(manifestFile, "utf8"));
+  const manifest = JSON.parse(readFileSync45(manifestFile, "utf8"));
   if (typeof manifest !== "object" || manifest === null || Array.isArray(manifest)) {
     throw new Error(`${manifestFile}: not a JSON object`);
   }
@@ -29314,7 +29274,7 @@ init_installed_plugins();
 
 // src/update/major.ts
 init_build_info();
-import { readFileSync as readFileSync48 } from "fs";
+import { readFileSync as readFileSync46 } from "fs";
 import { join as join40 } from "path";
 var MAJOR_NOTES_PATH = join40("src", "update", "major-notes.json");
 var NOTE_MAX = 120;
@@ -29356,7 +29316,7 @@ function readMajorNotes(location, from, to) {
   if (location === null)
     return [];
   try {
-    return majorNotesBetween(readFileSync48(join40(location, MAJOR_NOTES_PATH), "utf8"), from, to);
+    return majorNotesBetween(readFileSync46(join40(location, MAJOR_NOTES_PATH), "utf8"), from, to);
   } catch {
     return [];
   }
@@ -29451,7 +29411,7 @@ function routerNeedsSetup(paths) {
   if (install === null || !existsSync39(paths.routerCopy))
     return false;
   const bundle = join41(install.installPath, "dist", "router.js");
-  return existsSync39(bundle) && readFileSync49(bundle, "utf8") !== readFileSync49(paths.routerCopy, "utf8");
+  return existsSync39(bundle) && readFileSync47(bundle, "utf8") !== readFileSync47(paths.routerCopy, "utf8");
 }
 var ROUTER_SETUP_HINT = `its router changed: to run it, ${COMMAND} gateway setup (it asks before the restart); a machine set up before Claude became the default runs ${COMMAND} setup once first, which moves it`;
 function shownVersion(version) {
@@ -29472,7 +29432,7 @@ init_build_info();
 init_names();
 init_git();
 init_config();
-import { existsSync as existsSync46, readFileSync as readFileSync55, statSync as statSync20 } from "fs";
+import { existsSync as existsSync46, readFileSync as readFileSync53, statSync as statSync20 } from "fs";
 import { join as join49, resolve as resolve13 } from "path";
 
 // src/project/deploy-skill.ts
@@ -29485,7 +29445,7 @@ import {
   mkdirSync as mkdirSync17,
   openSync as openSync6,
   readdirSync as readdirSync15,
-  readFileSync as readFileSync50,
+  readFileSync as readFileSync48,
   statSync as statSync17,
   unlinkSync as unlinkSync5,
   writeFileSync as writeFileSync6
@@ -29675,7 +29635,7 @@ function findDeploySkills(root) {
   const named = [];
   const top = skillsFolder(root);
   for (const file of skillFilesUnder(top, MARKER_SEARCH_DEPTH, realTarget(root))) {
-    if (holdsDeployBlock(readFileSync50(file, "utf8")))
+    if (holdsDeployBlock(readFileSync48(file, "utf8")))
       holders.push(file);
     else if (isTopSkill(top, file) && namesAny(file, ["deploy"]))
       named.push(file);
@@ -29726,7 +29686,7 @@ function planDeploySkill(root, file, mode) {
   if (!existsSync40(real) || !statSync17(real).isFile()) {
     return refused(root, file, `${shown} is not a file`);
   }
-  const before = readFileSync50(real, "utf8");
+  const before = readFileSync48(real, "utf8");
   const crlf = isCrlf(before);
   const work = crlf ? before.replace(/\r\n/g, `
 `) : before;
@@ -29809,7 +29769,7 @@ import {
   lstatSync as lstatSync4,
   openSync as openSync7,
   readdirSync as readdirSync17,
-  readFileSync as readFileSync53,
+  readFileSync as readFileSync51,
   readlinkSync as readlinkSync5,
   readSync as readSync3
 } from "fs";
@@ -29889,7 +29849,7 @@ function sameAsMain(worktree, mainCheckout, path) {
       if (a.isDirectory()) {
         return b.isDirectory() && readdirSync17(here).every((entry) => same(join45(relative, entry)));
       }
-      return a.isFile() && b.isFile() && a.size === b.size && readFileSync53(here).equals(readFileSync53(there));
+      return a.isFile() && b.isFile() && a.size === b.size && readFileSync51(here).equals(readFileSync51(there));
     } catch {
       return false;
     }
@@ -29963,7 +29923,7 @@ import { basename as basename11, join as join48, resolve as resolve12 } from "pa
 
 // src/worktrees/in-progress.ts
 init_git();
-import { existsSync as existsSync44, readFileSync as readFileSync54, statSync as statSync18 } from "fs";
+import { existsSync as existsSync44, readFileSync as readFileSync52, statSync as statSync18 } from "fs";
 import { resolve as resolve11 } from "path";
 var BISECT = { ending: "`git bisect reset`", what: "a bisect" };
 var REBASE = { ending: "`git rebase --abort`", what: "a rebase" };
@@ -30012,7 +29972,7 @@ function readInProgress(worktree, env) {
       if (operation.kind === "folder")
         statSync18(marker);
       else
-        text = readFileSync54(marker, "utf8");
+        text = readFileSync52(marker, "utf8");
     } catch (error) {
       const code = error.code;
       if (code === "ENOENT" || code === "ENOTDIR")
@@ -30430,7 +30390,7 @@ function defaultFastCheck(root) {
     return null;
   let scripts;
   try {
-    const parsed = parseUserJson(readFileSync55(file, "utf8"));
+    const parsed = parseUserJson(readFileSync53(file, "utf8"));
     scripts = isObject2(parsed) ? parsed.scripts : undefined;
   } catch {
     return null;
@@ -30570,7 +30530,7 @@ var QUESTIONS = [
 ];
 var QUESTIONS_INTRO = `${QUESTIONS.length} questions. Enter keeps the answer in [brackets].`;
 function readText(file) {
-  return existsSync46(file) ? readFileSync55(file, "utf8") : null;
+  return existsSync46(file) ? readFileSync53(file, "utf8") : null;
 }
 var REVIEW_ADDON = `.claude/${PLUGIN}/review.md`;
 var NO_REUSE_GUARDS = `no reuse guards yet (${REVIEW_ADDON} has no "Reuse signals" heading): ask Claude to set them up (code-structure \xA7 13)`;
@@ -30844,7 +30804,7 @@ function readConfig(ctx) {
 }
 function configExists(ctx) {
   try {
-    readFileSync56(ctx.paths.gatewayConfigFile);
+    readFileSync54(ctx.paths.gatewayConfigFile);
     return true;
   } catch (error) {
     return error.code !== "ENOENT";
@@ -31129,7 +31089,7 @@ function claudeModels(config, seen = []) {
 function seenClaudeModels(ctx) {
   let text;
   try {
-    text = readFileSync56(ctx.paths.gatewayStateFile, "utf8");
+    text = readFileSync54(ctx.paths.gatewayStateFile, "utf8");
   } catch {
     return [];
   }
@@ -31220,7 +31180,7 @@ function limitWindowText(claim) {
 function limitFacts(ctx) {
   let text = null;
   try {
-    text = readFileSync56(ctx.paths.gatewayStateFile, "utf8");
+    text = readFileSync54(ctx.paths.gatewayStateFile, "utf8");
   } catch {
     text = null;
   }
@@ -31315,7 +31275,7 @@ function projectName(root) {
 }
 function readTextFile(file) {
   try {
-    return readFileSync56(file, "utf8");
+    return readFileSync54(file, "utf8");
   } catch {
     return null;
   }
@@ -31491,15 +31451,15 @@ function planWindows(ctx) {
 }
 
 // src/portal/api/work.ts
-import { readFileSync as readFileSync59 } from "fs";
+import { readFileSync as readFileSync57 } from "fs";
 import { join as join54 } from "path";
 
 // src/gateway/safety-checks-read.ts
-import { readFileSync as readFileSync57 } from "fs";
+import { readFileSync as readFileSync55 } from "fs";
 var DAY_MS2 = 86400000;
 function readSafetyChecks(file) {
   try {
-    return parseSafetyCheckState(readFileSync57(file, "utf8"));
+    return parseSafetyCheckState(readFileSync55(file, "utf8"));
   } catch {
     return null;
   }
@@ -31522,7 +31482,7 @@ init_git();
 init_resolve();
 
 // src/hooks/agent-usage.ts
-import { readFileSync as readFileSync58 } from "fs";
+import { readFileSync as readFileSync56 } from "fs";
 import { join as join52 } from "path";
 var AGENT_USAGE_FILE = "agent-usage.jsonl";
 function agentUsageFile(stateDir) {
@@ -31637,7 +31597,7 @@ function recordAgentUsage(input, event, paths, nowMs) {
     return said("the input names no agent transcript");
   let text;
   try {
-    text = readFileSync58(transcript, "utf8");
+    text = readFileSync56(transcript, "utf8");
   } catch {
     return said("the agent's transcript cannot be read, so its usage is not recorded");
   }
@@ -32100,7 +32060,7 @@ function guardAsksAnswer(deps, query) {
   const bucketMs = HISTORY_BUCKET_MS[query.range];
   let text;
   try {
-    text = readFileSync59(askLogFile(deps.action.portal.paths.stateDir), "utf8");
+    text = readFileSync57(askLogFile(deps.action.portal.paths.stateDir), "utf8");
   } catch {
     return {
       asks: [],
@@ -32311,7 +32271,7 @@ var ADDED_VERSION = 1;
 function readAddedProjects(paths) {
   let text;
   try {
-    text = readFileSync60(paths.portalProjectsFile, "utf8");
+    text = readFileSync58(paths.portalProjectsFile, "utf8");
   } catch {
     return [];
   }
@@ -32770,7 +32730,7 @@ async function waitForPortal(port, probe, wanted, waitMs) {
 
 // src/portal/lifecycle.ts
 init_build_info();
-import { existsSync as existsSync49, readFileSync as readFileSync62, rmSync as rmSync12 } from "fs";
+import { existsSync as existsSync49, readFileSync as readFileSync60, rmSync as rmSync12 } from "fs";
 import { join as join57 } from "path";
 init_bun_config();
 init_lock();
@@ -32782,7 +32742,7 @@ import {
   existsSync as existsSync48,
   mkdirSync as mkdirSync21,
   readdirSync as readdirSync18,
-  readFileSync as readFileSync61,
+  readFileSync as readFileSync59,
   renameSync as renameSync3,
   rmSync as rmSync11,
   statSync as statSync21,
@@ -32803,7 +32763,7 @@ function listFiles(folder) {
 function contentOfFolder(source) {
   return {
     names: listFiles(source),
-    read: (name) => readFileSync61(join56(source, ...name.split("/")))
+    read: (name) => readFileSync59(join56(source, ...name.split("/")))
   };
 }
 function sameFile(file, bytes, mode) {
@@ -32812,7 +32772,7 @@ function sameFile(file, bytes, mode) {
   if (mode !== undefined && hostPlatform() !== "win32" && (statSync21(file).mode & 511) !== mode) {
     return false;
   }
-  return readFileSync61(file).equals(bytes);
+  return readFileSync59(file).equals(bytes);
 }
 function sameFolder(target, content, mode) {
   const files = content.names;
@@ -32831,7 +32791,7 @@ function readOwnedFolders(stateDir) {
   const file = ownedFoldersFile(stateDir);
   if (!existsSync48(file))
     return [];
-  const parsed = JSON.parse(readFileSync61(file, "utf8"));
+  const parsed = JSON.parse(readFileSync59(file, "utf8"));
   const folders = parsed?.folders;
   if (!Array.isArray(folders) || !folders.every((one) => typeof one === "string")) {
     throw new Error(`Invalid ${file}: expected { "folders": [<path>, \u2026] }`);
@@ -32964,7 +32924,7 @@ function refreshPortalCopy(paths, pluginFolder) {
       error: `the portal bundle is missing (${bundle}); this install is incomplete. Run ${COMMAND} doctor, then reinstall the plugin.`
     };
   }
-  writeManagedFile(paths.portalCopy, readFileSync62(bundle, "utf8"), {
+  writeManagedFile(paths.portalCopy, readFileSync60(bundle, "utf8"), {
     kind: "whole-file",
     stateDir: paths.stateDir
   });
@@ -32981,7 +32941,7 @@ function refreshPortalExport(paths, pluginFolder) {
     return {};
   } catch (error) {
     return {
-      note: `the portal's export was not refreshed (${messageOf3(error)}); the page that is there, or the server-rendered one, answers`
+      note: `the portal's export was not refreshed (${messageOf(error)}); the page that is there, or the server-rendered one, answers`
     };
   }
 }
@@ -33032,7 +32992,7 @@ async function ensurePortal(deps) {
   try {
     deps.kill(state.pid);
   } catch (error) {
-    const reason = `the portal (pid ${state.pid}) could not be stopped: ${messageOf3(error)}`;
+    const reason = `the portal (pid ${state.pid}) could not be stopped: ${messageOf(error)}`;
     deps.log(`failed: ${reason}`);
     return { kind: "failed", reason };
   }
@@ -33062,7 +33022,7 @@ function portalLog(paths, line, nowMs = Date.now()) {
 }
 function noteHeldPortOnce(paths, port, nowMs) {
   try {
-    const text = readFileSync62(paths.portalHeldFile, "utf8");
+    const text = readFileSync60(paths.portalHeldFile, "utf8");
     const held = JSON.parse(text);
     if (held.port === port)
       return false;
@@ -33077,9 +33037,6 @@ function clearHeldPort(paths) {
   try {
     rmSync12(paths.portalHeldFile, { force: true });
   } catch {}
-}
-function messageOf3(error) {
-  return error instanceof Error ? error.message : String(error);
 }
 
 // src/portal/command.ts
@@ -33160,7 +33117,7 @@ init_build_info();
 import { dirname as dirname32, extname as extname3, join as join82 } from "path";
 
 // src/cli/doctor.ts
-import { accessSync as accessSync4, constants as constants5, existsSync as existsSync64, readFileSync as readFileSync74 } from "fs";
+import { accessSync as accessSync4, constants as constants5, existsSync as existsSync64, readFileSync as readFileSync72 } from "fs";
 import { dirname as dirname31, join as join74 } from "path";
 init_build_info();
 
@@ -33401,7 +33358,7 @@ function herdrChecks(r = defaultHcRunner) {
 
 // src/jobs/doctor.ts
 init_names();
-import { readFileSync as readFileSync64 } from "fs";
+import { readFileSync as readFileSync62 } from "fs";
 init_paths2();
 init_user_json();
 
@@ -34587,7 +34544,7 @@ init_build_info();
 init_installed_plugins();
 init_launcher();
 init_lock();
-import { accessSync as accessSync3, constants as constants3, existsSync as existsSync52, readdirSync as readdirSync19, readFileSync as readFileSync63, statSync as statSync23 } from "fs";
+import { accessSync as accessSync3, constants as constants3, existsSync as existsSync52, readdirSync as readdirSync19, readFileSync as readFileSync61, statSync as statSync23 } from "fs";
 import { join as join61 } from "path";
 init_write();
 function hookLauncher(paths) {
@@ -34699,7 +34656,7 @@ function gitHooksState(paths) {
       problems.push(`${name} is missing`);
     else if (!isExecutable(file))
       problems.push(`${name} is not executable`);
-    else if (readFileSync63(file, "utf8") !== wanted)
+    else if (readFileSync61(file, "utf8") !== wanted)
       problems.push(`${name} is from another version`);
   }
   for (const entry of readdirSync19(folder)) {
@@ -34831,7 +34788,7 @@ function heavyJobChecks(paths, limits, platform = hostPlatform()) {
     checks.push(...limitsChecks(paths, limits));
   const file = jobsPaths(paths.home).legacyFile;
   try {
-    const old = parseUserJson(readFileSync64(file, "utf8"));
+    const old = parseUserJson(readFileSync62(file, "utf8"));
     if (typeof old === "object" && old !== null && "maxJobs" in old)
       checks.push({
         ok: true,
@@ -34855,7 +34812,7 @@ function heavyJobChecks(paths, limits, platform = hostPlatform()) {
 // src/machine/claude-mem.ts
 init_names();
 init_paths2();
-import { existsSync as existsSync53, readFileSync as readFileSync65, rmSync as rmSync13 } from "fs";
+import { existsSync as existsSync53, readFileSync as readFileSync63, rmSync as rmSync13 } from "fs";
 import { join as join62 } from "path";
 init_installed_plugins();
 init_managed_json();
@@ -34951,7 +34908,7 @@ function gatewayAffordableTarget(gatewayConfigFile, after) {
 var CHOICES_FILE = "claude-mem-choices.json";
 function readChoicesFile(stateDir) {
   try {
-    const parsed = JSON.parse(readFileSync65(join62(stateDir, CHOICES_FILE), "utf8"));
+    const parsed = JSON.parse(readFileSync63(join62(stateDir, CHOICES_FILE), "utf8"));
     return isObject2(parsed) ? parsed : {};
   } catch {
     return {};
@@ -35258,7 +35215,7 @@ function autoUpdateState(paths) {
 init_installed_plugins();
 
 // src/setup/instructions.ts
-import { existsSync as existsSync55, readdirSync as readdirSync20, readFileSync as readFileSync67, rmSync as rmSync14 } from "fs";
+import { existsSync as existsSync55, readdirSync as readdirSync20, readFileSync as readFileSync65, rmSync as rmSync14 } from "fs";
 import { join as join64, relative as relative5, sep as sep3 } from "path";
 init_path_compare();
 init_installed_plugins();
@@ -35270,7 +35227,7 @@ init_path_compare();
 // src/setup/managed-entries.ts
 init_managed_json();
 init_write();
-import { existsSync as existsSync54, readFileSync as readFileSync66 } from "fs";
+import { existsSync as existsSync54, readFileSync as readFileSync64 } from "fs";
 import { join as join63 } from "path";
 var OWNED_ENTRIES_FILE = "owned-entries.json";
 var ANCHOR_SOURCE = "";
@@ -35284,7 +35241,7 @@ function readOwnedEntries(stateDir) {
   const file = join63(stateDir, OWNED_ENTRIES_FILE);
   if (!existsSync54(file))
     return {};
-  const parsed = JSON.parse(readFileSync66(file, "utf8"));
+  const parsed = JSON.parse(readFileSync64(file, "utf8"));
   const valid = isObject2(parsed) && Object.values(parsed).every((lists) => isObject2(lists) && Object.values(lists).every((list) => Array.isArray(list) && list.every(isOwnedEntry)));
   if (!valid) {
     throw new Error(`Invalid ${file}: expected { <file>: { <key path>: [{ "entry", "source" }] } }`);
@@ -35463,7 +35420,7 @@ function readVersionStamp(stateDir) {
   const file = versionStampFile(stateDir);
   if (!existsSync55(file))
     return null;
-  const version = readFileSync67(file, "utf8").trim();
+  const version = readFileSync65(file, "utf8").trim();
   return version === "" ? null : version;
 }
 function instructionsPaths(paths, source) {
@@ -35526,7 +35483,7 @@ function copyDifferences(paths) {
     const copy = join64(paths.target, name);
     if (!existsSync55(copy))
       out.push(`${name} is missing`);
-    else if (readFileSync67(copy, "utf8") !== readFileSync67(join64(paths.source, name), "utf8")) {
+    else if (readFileSync65(copy, "utf8") !== readFileSync65(join64(paths.source, name), "utf8")) {
       out.push(`${name} differs`);
     }
   }
@@ -35817,7 +35774,6 @@ init_paths2();
 // src/cli/project-checks.ts
 init_build_info();
 init_names();
-init_git();
 import {
   closeSync as closeSync11,
   constants as constants4,
@@ -35825,12 +35781,13 @@ import {
   fstatSync as fstatSync3,
   openSync as openSync11,
   readdirSync as readdirSync21,
-  readFileSync as readFileSync73,
+  readFileSync as readFileSync71,
   readSync as readSync7,
   realpathSync as realpathSync10,
   statSync as statSync25
 } from "fs";
 import { isAbsolute as isAbsolute5, join as join73, relative as relative6, resolve as resolve18 } from "path";
+init_git();
 
 // src/hooks/after-merge.ts
 init_names();
@@ -36688,7 +36645,6 @@ function pullRequestCallsWithAliases(command, folder, env, timeoutMs = ALIAS_TIM
   }
   return pullRequestCalls(command, aliases, dialect);
 }
-var GH_TIMEOUT_MS2 = 1e4;
 var ALIAS_TIMEOUT_MS = 3000;
 function onceAliases(folder, env, timeoutMs) {
   let read = null;
@@ -36700,23 +36656,10 @@ function onceAliases(folder, env, timeoutMs) {
 function readGhAliases(folder, env, timeoutMs = ALIAS_TIMEOUT_MS) {
   if (timeoutMs <= 0)
     return null;
-  try {
-    const run = Bun.spawnSync(["gh", "alias", "list"], {
-      cwd: folder,
-      env,
-      stdin: "ignore",
-      stdout: "pipe",
-      stderr: "pipe",
-      timeout: timeoutMs
-    });
-    const out = run.stdout.toString();
-    if (run.exitCode !== 0) {
-      return /no aliases configured/i.test(`${out}${run.stderr.toString()}`) ? new Map : null;
-    }
-    return parseAliasList(out);
-  } catch {
-    return null;
-  }
+  const run = runGhSync(["alias", "list"], { env, folder, timeoutMs });
+  if (run.kind === "ok")
+    return parseAliasList(run.out);
+  return /no aliases configured/i.test(`${run.out}${run.err}`) ? new Map : null;
 }
 function parseAliasList(text) {
   const aliases = new Map;
@@ -36872,20 +36815,15 @@ async function otherOpenPlans(context) {
 function viewPullRequest2(ref, repo, folder, env, timeoutMs) {
   if (timeoutMs <= 0)
     return null;
-  try {
-    const view = Bun.spawnSync([
-      "gh",
-      "pr",
-      "view",
-      ...ref === null ? [] : [ref],
-      ...repo === null ? [] : ["--repo", repo],
-      "--json",
-      PULL_REQUEST_FIELDS
-    ], { cwd: folder, env, stdin: "ignore", stdout: "pipe", stderr: "pipe", timeout: timeoutMs });
-    return view.exitCode === 0 ? parsePullRequestView(view.stdout.toString()) : null;
-  } catch {
-    return null;
-  }
+  const view = runGhSync([
+    "pr",
+    "view",
+    ...ref === null ? [] : [ref],
+    ...repo === null ? [] : ["--repo", repo],
+    "--json",
+    PULL_REQUEST_FIELDS
+  ], { env, folder, timeoutMs });
+  return view.kind === "ok" ? parsePullRequestView(view.out) : null;
 }
 function seenFile(repo, number, env) {
   const key = createHash9("sha256").update(repo).digest("hex").slice(0, 16);
@@ -36918,7 +36856,7 @@ async function afterMerge(context) {
       branch: linked.find((listed) => listed.path === mine)?.branch ?? null
     };
   }
-  const viewLeft = timeFor(GH_TIMEOUT_MS2);
+  const viewLeft = timeFor(GH_TIMEOUT_MS);
   if (viewLeft <= 0)
     return SILENT;
   const pr = viewPullRequest2(target.ref, target.repo, cwd, env, viewLeft);
@@ -37612,7 +37550,7 @@ function sessionGatewayOf(paths, env) {
 
 // src/hooks/session-name.ts
 init_names();
-import { existsSync as existsSync57, mkdirSync as mkdirSync23, readFileSync as readFileSync68, renameSync as renameSync4, rmSync as rmSync15, writeFileSync as writeFileSync10 } from "fs";
+import { existsSync as existsSync57, mkdirSync as mkdirSync23, readFileSync as readFileSync66, renameSync as renameSync4, rmSync as rmSync15, writeFileSync as writeFileSync10 } from "fs";
 import { tmpdir as tmpdir6 } from "os";
 import { join as join66 } from "path";
 var MAX_SESSION_NAME = 60;
@@ -37631,7 +37569,7 @@ function namesDir(env) {
 }
 function readName(file) {
   try {
-    return existsSync57(file) ? cleanSessionName(readFileSync68(file, "utf8")) : null;
+    return existsSync57(file) ? cleanSessionName(readFileSync66(file, "utf8")) : null;
   } catch {
     return null;
   }
@@ -37782,7 +37720,8 @@ import { existsSync as existsSync60 } from "fs";
 init_kind_defaults();
 
 // src/jobs/package-scripts.ts
-import { existsSync as existsSync59, readFileSync as readFileSync69, statSync as statSync24 } from "fs";
+init_user_json();
+import { existsSync as existsSync59, readFileSync as readFileSync67, statSync as statSync24 } from "fs";
 import { dirname as dirname27, join as join68, resolve as resolve15 } from "path";
 var NO_FILE_HERE = new Set(["ENOENT", "ENOTDIR", "EISDIR"]);
 function foldersToCheckoutRoot(start) {
@@ -37799,7 +37738,7 @@ function packageScripts(folder) {
   for (const dir of foldersToCheckoutRoot(resolve15(folder))) {
     let text;
     try {
-      text = readFileSync69(join68(dir, "package.json"), "utf8");
+      text = readFileSync67(join68(dir, "package.json"), "utf8");
     } catch (error) {
       if (NO_FILE_HERE.has(error.code ?? ""))
         continue;
@@ -37812,7 +37751,7 @@ function packageScripts(folder) {
 function scriptsOf(text, folder) {
   let parsed;
   try {
-    parsed = JSON.parse(text);
+    parsed = parseUserJson(text);
   } catch {
     return null;
   }
@@ -37845,7 +37784,7 @@ function usesYarnBerry(packageJson, folder) {
 }
 function packageJsonAt(dir) {
   try {
-    const parsed = JSON.parse(readFileSync69(join68(dir, "package.json"), "utf8"));
+    const parsed = readUserJson(join68(dir, "package.json"));
     return parsed !== null && typeof parsed === "object" ? parsed : null;
   } catch {
     return null;
@@ -38481,7 +38420,7 @@ var sessionNameHook = {
 init_names();
 init_lock();
 init_write();
-import { mkdirSync as mkdirSync25, readFileSync as readFileSync70 } from "fs";
+import { mkdirSync as mkdirSync25, readFileSync as readFileSync68 } from "fs";
 import { dirname as dirname28, join as join69 } from "path";
 var SUBAGENT_BACKGROUND = "subagent-background";
 var HAND_BACK_REASON = "Your background work is still running: wait for it or stop it, then report.";
@@ -38572,7 +38511,7 @@ var BLOCKS_LOCK_WAIT_MS = 3000;
 var BLOCKS_KEPT_MS = 24 * 60 * 60 * 1000;
 function readBlocks(file) {
   try {
-    const parsed = JSON.parse(readFileSync70(file, "utf8"));
+    const parsed = JSON.parse(readFileSync68(file, "utf8"));
     if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed))
       return {};
     return Object.fromEntries(Object.entries(parsed).filter((entry) => typeof entry[1] === "number"));
@@ -38616,7 +38555,7 @@ async function subagentBackground(context) {
     return SILENT;
   let text;
   try {
-    text = readFileSync70(transcript, "utf8");
+    text = readFileSync68(transcript, "utf8");
   } catch {
     return SILENT;
   }
@@ -38752,7 +38691,7 @@ var taskStartHook = {
 
 // src/hooks/tier-view.ts
 init_names();
-import { existsSync as existsSync61, mkdirSync as mkdirSync26, readFileSync as readFileSync71, writeFileSync as writeFileSync12 } from "fs";
+import { existsSync as existsSync61, mkdirSync as mkdirSync26, readFileSync as readFileSync69, writeFileSync as writeFileSync12 } from "fs";
 import { dirname as dirname29, join as join70 } from "path";
 
 // src/models/tier-view.ts
@@ -38801,7 +38740,7 @@ function checksNote(paths, env, nowMs) {
 }
 function lastSaid2(mark) {
   try {
-    return readFileSync71(mark, "utf8");
+    return readFileSync69(mark, "utf8");
   } catch {
     return null;
   }
@@ -38869,7 +38808,7 @@ function judgesCall(inDomain, input) {
 init_zod();
 init_lock();
 init_write();
-import { mkdirSync as mkdirSync27, readFileSync as readFileSync72 } from "fs";
+import { mkdirSync as mkdirSync27, readFileSync as readFileSync70 } from "fs";
 import { join as join71 } from "path";
 var PARK_KINDS = ["question", "action", "decision"];
 var AWAY_LOCK_WAIT_MS = 5000;
@@ -38920,7 +38859,7 @@ function readAway(stateDir) {
   const file = awayStateFile(stateDir);
   let text;
   try {
-    text = readFileSync72(file, "utf8");
+    text = readFileSync70(file, "utf8");
   } catch (error) {
     if (error.code === "ENOENT")
       return freshState();
@@ -39700,9 +39639,6 @@ init_resolve2();
 init_schema();
 init_paths2();
 var GIT_FIX = `check that git works in this folder (git status), then run: ${COMMAND} doctor`;
-function message(error) {
-  return error instanceof Error ? error.message : String(error);
-}
 function shown3(file, projectDir, home) {
   return file.startsWith(`${projectDir}/`) ? file.slice(projectDir.length + 1) : tildify(file, home);
 }
@@ -39718,7 +39654,7 @@ function retiredReviewAgentCheck(file, label, personal = false) {
   } catch (error) {
     return {
       ok: false,
-      text: `${label} cannot be read (${message(error)})`,
+      text: `${label} cannot be read (${messageOf(error)})`,
       fix: "correct the JSON in this file"
     };
   }
@@ -39789,7 +39725,7 @@ function retiredReviewMentions(projectDir) {
   ].sort();
   return files.filter((file) => {
     try {
-      return readFileSync73(join73(projectDir, file), "utf8").includes(OLD_REVIEW_AGENT);
+      return readFileSync71(join73(projectDir, file), "utf8").includes(OLD_REVIEW_AGENT);
     } catch {
       return false;
     }
@@ -39882,7 +39818,7 @@ function baseRefOf2(sources) {
     if (!existsSync63(file))
       continue;
     try {
-      const parsed = JSON.parse(readFileSync73(file, "utf8"));
+      const parsed = readUserJson(file);
       if (typeof parsed !== "object" || parsed === null)
         continue;
       const worktree = parsed.worktree;
@@ -39896,7 +39832,7 @@ function baseRefOf2(sources) {
   return baseRef;
 }
 function readPluginHooks(file) {
-  const parsed = JSON.parse(readFileSync73(file, "utf8"));
+  const parsed = JSON.parse(readFileSync71(file, "utf8"));
   return Object.entries(parsed.hooks ?? {}).flatMap(([event, groups]) => groups.flatMap((group) => (group.hooks ?? []).flatMap((handler) => {
     const bundle = /\/dist\/([a-z-]+)\.js(?:["'\s]|$)/.exec(handler.command ?? "")?.[1];
     if (bundle === undefined)
@@ -39920,7 +39856,7 @@ function ownCopyLines(config, sources, pluginHooksFile, projectDir, home) {
     return [
       {
         ok: false,
-        text: `cannot read the plugin's hooks (${pluginHooksFile}): ${message(error)}`,
+        text: `cannot read the plugin's hooks (${pluginHooksFile}): ${messageOf(error)}`,
         fix: PLUGIN_UPDATE_COMMAND
       }
     ];
@@ -40047,7 +39983,11 @@ function deployBlockLines(root, usesDeployTasks) {
     return lines;
   } catch (error) {
     return [
-      { ok: true, info: true, text: `project: deploy-skill block not checked, ${message(error)}` }
+      {
+        ok: true,
+        info: true,
+        text: `project: deploy-skill block not checked, ${messageOf(error)}`
+      }
     ];
   }
 }
@@ -40317,7 +40257,7 @@ function planCapChecks(cwd, env, paths, config) {
   try {
     cap = resolvePlans(paths, config).maxPhases;
   } catch (error) {
-    return [{ ok: true, info: true, text: `project plans: not checked, ${message(error)}` }];
+    return [{ ok: true, info: true, text: `project plans: not checked, ${messageOf(error)}` }];
   }
   const read = readWorkStore(paths, (db) => allTasks(db, context.project));
   if (read.state !== "ready")
@@ -40419,7 +40359,11 @@ async function projectTaskChecks(cwd, env) {
     return lines;
   } catch (error) {
     return [
-      { ok: false, text: `deploy tasks: ${message(error)}`, fix: `run \`${COMMAND} task check\`` }
+      {
+        ok: false,
+        text: `deploy tasks: ${messageOf(error)}`,
+        fix: `run \`${COMMAND} task check\``
+      }
     ];
   }
 }
@@ -40518,7 +40462,7 @@ async function checkLauncher(paths, platform, read) {
       }
     ];
   }
-  const script = readFileSync74(launcher, "utf8");
+  const script = readFileSync72(launcher, "utf8");
   const bun = bakedBunPath(script);
   if (bun === null || script !== launcherScript(bun)) {
     return [{ ok: false, text: `the launcher ${where} is out of date`, fix: SETUP_FIX }];
@@ -40554,7 +40498,7 @@ async function checkLauncherCmd(paths, shLauncher, read) {
       fix: SETUP_FIX
     };
   }
-  const script = readFileSync74(cmd, "utf8");
+  const script = readFileSync72(cmd, "utf8");
   const bun = cmdBakedBunPath(script);
   if (bun === null || script !== launcherCmdScript(bun)) {
     return {
@@ -40930,7 +40874,7 @@ function checkInstructions(paths, source) {
       fix: SETUP_FIX
     };
   }
-  const text = existsSync64(where.claudeMd) ? readFileSync74(where.claudeMd, "utf8") : "";
+  const text = existsSync64(where.claudeMd) ? readFileSync72(where.claudeMd, "utf8") : "";
   if (!text.includes(instructionsBlockBody(where.importPath))) {
     return {
       ok: false,
@@ -40992,7 +40936,7 @@ function checkProjectImports(paths, cwd) {
         continue;
       let text;
       try {
-        text = readFileSync74(from, "utf8");
+        text = readFileSync72(from, "utf8");
       } catch {
         continue;
       }
@@ -41339,7 +41283,7 @@ function checkLine(check) {
 // src/jobs/status.ts
 init_resolve();
 init_resolve2();
-import { mkdirSync as mkdirSync29, readdirSync as readdirSync23, readFileSync as readFileSync76, statSync as statSync27 } from "fs";
+import { mkdirSync as mkdirSync29, readdirSync as readdirSync23, readFileSync as readFileSync74, statSync as statSync27 } from "fs";
 import { join as join76 } from "path";
 
 // src/jobs/queue.ts
@@ -41432,7 +41376,7 @@ import {
   chmodSync as chmodSync3,
   mkdirSync as mkdirSync28,
   readdirSync as readdirSync22,
-  readFileSync as readFileSync75,
+  readFileSync as readFileSync73,
   renameSync as renameSync5,
   statSync as statSync26,
   unlinkSync as unlinkSync6,
@@ -41587,7 +41531,7 @@ function leaseStore(options) {
       }
       let unreadable = null;
       try {
-        text = readFileSync75(path, "utf8");
+        text = readFileSync73(path, "utf8");
       } catch (error) {
         const code = errorCode(error);
         if (code === "ENOENT")
@@ -41782,7 +41726,7 @@ function jobsFingerprint(home) {
   const dir = jobsPaths(home).stateDir;
   const parts = [];
   try {
-    parts.push(readFileSync76(jobsPaths(home).configFile, "utf8"));
+    parts.push(readFileSync74(jobsPaths(home).configFile, "utf8"));
   } catch (error) {
     parts.push(`config:${error.code}`);
   }
@@ -42672,7 +42616,7 @@ init_lock();
 init_managed_json();
 
 // src/tasks/ops.ts
-import { existsSync as existsSync66, readFileSync as readFileSync77, rmSync as rmSync17, statSync as statSync28 } from "fs";
+import { existsSync as existsSync66, readFileSync as readFileSync75, rmSync as rmSync17, statSync as statSync28 } from "fs";
 import { join as join79, relative as relative7 } from "path";
 
 // src/tasks/schemas.ts
@@ -44322,7 +44266,7 @@ ${stale}`)
         const input = taskSchemas.get.parse(raw);
         const text = isDeployTaskId(input.task) ? (() => {
           const file = project(input.task).file;
-          const text = readFileSync77(file, "utf8");
+          const text = readFileSync75(file, "utf8");
           const here = deployContext();
           const root = here.ok ? here.checkoutRoot : null;
           if (root === null)
@@ -48035,7 +47979,7 @@ class LiveHub {
 }
 
 // src/portal/live/sources.ts
-import { readFileSync as readFileSync78, statSync as statSync30 } from "fs";
+import { readFileSync as readFileSync76, statSync as statSync30 } from "fs";
 init_db();
 init_state();
 var LIVE_POLL_MS = 2000;
@@ -48074,7 +48018,7 @@ function createLiveSources(deps) {
   let guardSeeded = false;
   function textOf(file) {
     try {
-      return readFileSync78(file, "utf8");
+      return readFileSync76(file, "utf8");
     } catch {
       return null;
     }
@@ -48121,7 +48065,7 @@ function createLiveSources(deps) {
     const file = askLogFile(deps.paths.stateDir);
     let bytes;
     try {
-      bytes = readFileSync78(file);
+      bytes = readFileSync76(file);
     } catch {
       if (!guardSeeded) {
         guardSeeded = true;
@@ -48226,7 +48170,7 @@ function createLiveSources(deps) {
 }
 
 // src/portal/static.ts
-import { existsSync as existsSync68, readFileSync as readFileSync79, statSync as statSync31 } from "fs";
+import { existsSync as existsSync68, readFileSync as readFileSync77, statSync as statSync31 } from "fs";
 import { extname as extname2, join as join81, resolve as resolve19, sep as sep4 } from "path";
 var TYPES = {
   ".css": "text/css; charset=utf-8",
@@ -48278,7 +48222,7 @@ function pageFile(folder, pathname) {
 function readCsp(folder) {
   let parsed;
   try {
-    parsed = JSON.parse(readFileSync79(join81(folder, "csp.json"), "utf8"));
+    parsed = JSON.parse(readFileSync77(join81(folder, "csp.json"), "utf8"));
   } catch {
     return { styleAttr: [], styleElem: [] };
   }
@@ -48325,7 +48269,7 @@ function exportServer(source) {
       if (kept !== undefined)
         return kept;
       try {
-        const bytes = readFileSync79(file);
+        const bytes = readFileSync77(file);
         if (cache.size >= CACHE_MAX)
           cache.clear();
         cache.set(file, bytes);

@@ -120,38 +120,20 @@ var init_paths2 = __esm(() => {
   init_paths();
 });
 
-// src/setup/user-json.ts
-import { readFileSync } from "fs";
-function withoutBom(text) {
-  return text.startsWith(BOM) ? text.slice(BOM.length) : text;
+// src/path-compare.ts
+import { dirname, resolve } from "path";
+function isInside(path, folder, ignoreCase = IGNORE_CASE) {
+  const child = pathForm(path, ignoreCase);
+  const parent = pathForm(folder, ignoreCase);
+  return child === parent || child.startsWith(`${parent}/`);
 }
-function parseUserJson(text) {
-  return JSON.parse(withoutBom(text));
+function pathForm(path, ignoreCase = IGNORE_CASE) {
+  const forward = resolve(path.replace(/\\/g, "/")).replace(/\\/g, "/").replace(/\/+$/, "");
+  return ignoreCase ? forward.toLowerCase() : forward;
 }
-function readUserJson(file) {
-  return parseUserJson(readFileSync(file, "utf8"));
-}
-var BOM = "\uFEFF";
-var init_user_json = () => {};
-
-// src/project/config-facts.ts
-import { existsSync } from "fs";
-function readOwnHooks(file) {
-  if (!existsSync(file))
-    return null;
-  try {
-    const raw = readUserJson(file);
-    if (typeof raw !== "object" || raw === null || Array.isArray(raw))
-      return [];
-    const listed = raw.ownHooks;
-    return Array.isArray(listed) ? listed.filter((name) => typeof name === "string") : [];
-  } catch {
-    return [];
-  }
-}
-var CONFIG_PATH = ".claude/cc-smart-dev-kit.json";
-var init_config_facts = __esm(() => {
-  init_user_json();
+var IGNORE_CASE;
+var init_path_compare = __esm(() => {
+  IGNORE_CASE = process.platform === "win32";
 });
 
 // src/project/git-env.ts
@@ -177,9 +159,207 @@ var init_git_env = __esm(() => {
   ];
 });
 
+// src/setup/file-mode.ts
+import { chmodSync, fchmodSync } from "fs";
+function failureIsFatal(platform) {
+  return platform !== "win32";
+}
+function setFileMode(fileOrFd, mode, platform = hostPlatform()) {
+  try {
+    if (typeof fileOrFd === "number")
+      fchmodSync(fileOrFd, mode);
+    else
+      chmodSync(fileOrFd, mode);
+  } catch (error) {
+    if (failureIsFatal(platform))
+      throw error;
+  }
+}
+var init_file_mode = () => {};
+
+// src/setup/lock.ts
+var FALLBACK_STALE_MS;
+var init_lock = __esm(() => {
+  init_file_mode();
+  FALLBACK_STALE_MS = 10 * 60 * 1000;
+});
+
+// src/setup/write.ts
+import {
+  closeSync,
+  existsSync,
+  fsyncSync,
+  lstatSync,
+  mkdirSync,
+  openSync,
+  readdirSync,
+  readFileSync,
+  readlinkSync,
+  realpathSync,
+  renameSync,
+  statSync,
+  unlinkSync,
+  writeFileSync
+} from "fs";
+import { basename, dirname as dirname2, join as join3, resolve as resolve2 } from "path";
+function writeTemp(file, content, mode) {
+  const dir = dirname2(file);
+  mkdirSync(dir, { recursive: true });
+  const temp = join3(dir, `.${basename(file)}.cc-smart-dev-kit-tmp-${process.pid}-${crypto.randomUUID()}`);
+  try {
+    const fd = openSync(temp, "wx", mode);
+    try {
+      writeFileSync(fd, content);
+      fsyncSync(fd);
+    } finally {
+      closeSync(fd);
+    }
+    setFileMode(temp, mode);
+  } catch (error) {
+    if (existsSync(temp))
+      unlinkSync(temp);
+    throw error;
+  }
+  return temp;
+}
+function atomicWrite(file, content, mode, beforeRename) {
+  const temp = writeTemp(file, content, mode);
+  try {
+    beforeRename?.();
+    renameSync(temp, file);
+  } catch (error) {
+    if (existsSync(temp))
+      unlinkSync(temp);
+    throw error;
+  }
+}
+var init_write = __esm(() => {
+  init_file_mode();
+});
+
+// src/workflow/reviews.ts
+import { createHash } from "crypto";
+function repoKey(repo) {
+  return createHash("sha256").update(repo).digest("hex").slice(0, 16);
+}
+var START_KEPT_MS;
+var init_reviews = __esm(() => {
+  init_lock();
+  init_write();
+  START_KEPT_MS = 24 * 60 * 60 * 1000;
+});
+
+// src/hooks/git.ts
+function runGit(cwd, args, env, timeoutMs = 15000, own = {}, input) {
+  return spawnGit(cwd, args, env, timeoutMs, own, true, input);
+}
+function spawnGit(cwd, args, env, timeoutMs, own, trim, input) {
+  const bytes = input === undefined ? undefined : new TextEncoder().encode(input);
+  const run = spawnGitBytes(cwd, args, env, timeoutMs, own, bytes);
+  const out = new TextDecoder("utf-8", { ignoreBOM: true }).decode(run.out);
+  return { ...run, out: trim ? out.trim() : out };
+}
+function spawnGitBytes(cwd, args, env, timeoutMs, own, input) {
+  try {
+    const result = Bun.spawnSync(["git", ...args], {
+      cwd,
+      env: { ...gitEnv(env), ...own },
+      stdin: input ?? "ignore",
+      stdout: "pipe",
+      stderr: "pipe",
+      timeout: timeoutMs,
+      windowsHide: true
+    });
+    const err = result.signalCode ? GIT_TIMED_OUT : result.stderr.toString().trim();
+    const code = result.signalCode ? null : result.exitCode;
+    return { ok: result.exitCode === 0, out: result.stdout, err, code };
+  } catch (error) {
+    const err = error instanceof Error ? error.message : String(error);
+    return { ok: false, out: new Uint8Array, err, code: null };
+  }
+}
+function parseWorktreeList(porcelain) {
+  const worktrees = [];
+  for (const block of porcelain.split(/\r?\n\r?\n/)) {
+    const lines = block.split(/\r?\n/).filter((line) => line !== "");
+    const value = (key) => lines.find((line) => line.startsWith(`${key} `))?.slice(key.length + 1);
+    const flag = (key) => lines.some((line) => line === key || line.startsWith(`${key} `));
+    const path = value("worktree");
+    if (path === undefined)
+      continue;
+    const lockReason = value("locked")?.trim();
+    worktrees.push({
+      path,
+      head: value("HEAD") ?? "",
+      branch: value("branch")?.replace(/^refs\/heads\//, "") ?? null,
+      locked: flag("locked"),
+      ...lockReason === undefined || lockReason === "" ? {} : { lockReason },
+      prunable: flag("prunable"),
+      ...flag("bare") ? { bare: true } : {}
+    });
+  }
+  return worktrees;
+}
+function listWorktrees(cwd, env, timeoutMs = 15000) {
+  const listed = runGit(cwd, ["worktree", "list", "--porcelain"], env, timeoutMs);
+  if (!listed.ok)
+    throw new Error(`git worktree list failed: ${listed.err}`);
+  return parseWorktreeList(listed.out);
+}
+function innermostWorktree(path, worktrees) {
+  let deepest = null;
+  for (const worktree of worktrees) {
+    if (isInside(path, worktree) && (deepest === null || worktree.length > deepest.length)) {
+      deepest = worktree;
+    }
+  }
+  return deepest;
+}
+var GIT_TIMED_OUT = "timed out", GUARD_GIT_TIMEOUT_MS = 5000;
+var init_git = __esm(() => {
+  init_path_compare();
+  init_git_env();
+  init_reviews();
+  init_path_compare();
+});
+
+// src/setup/user-json.ts
+import { readFileSync as readFileSync2 } from "fs";
+function withoutBom(text) {
+  return text.startsWith(BOM) ? text.slice(BOM.length) : text;
+}
+function parseUserJson(text) {
+  return JSON.parse(withoutBom(text));
+}
+function readUserJson(file) {
+  return parseUserJson(readFileSync2(file, "utf8"));
+}
+var BOM = "\uFEFF";
+var init_user_json = () => {};
+
+// src/project/config-facts.ts
+import { existsSync as existsSync2 } from "fs";
+function readOwnHooks(file) {
+  if (!existsSync2(file))
+    return null;
+  try {
+    const raw = readUserJson(file);
+    if (typeof raw !== "object" || raw === null || Array.isArray(raw))
+      return [];
+    const listed = raw.ownHooks;
+    return Array.isArray(listed) ? listed.filter((name) => typeof name === "string") : [];
+  } catch {
+    return [];
+  }
+}
+var CONFIG_PATH = ".claude/cc-smart-dev-kit.json";
+var init_config_facts = __esm(() => {
+  init_user_json();
+});
+
 // src/project/locate.ts
-import { existsSync as existsSync2, realpathSync, statSync } from "fs";
-import { join as join3 } from "path";
+import { existsSync as existsSync3, realpathSync as realpathSync2, statSync as statSync2 } from "fs";
+import { join as join4 } from "path";
 function gitNotFound(error) {
   const why = error instanceof Error ? error.message : String(error);
   return /not found in \$PATH|ENOENT/.test(why) ? new Error(GIT_NOT_FOUND) : error;
@@ -230,21 +410,13 @@ function mainCheckoutFrom(list, cwd) {
     throw new GitTimedOutError;
   if (!list.ok)
     throw new Error(`git worktree list failed in ${cwd}: ${list.stderr.trim()}`);
-  const [firstEntry = ""] = list.stdout.split(`
-
-`);
-  const lines = firstEntry.split(`
-`);
-  if (lines.includes("bare"))
+  const [main] = parseWorktreeList(list.stdout);
+  if (main === undefined || main.bare === true)
     return null;
-  const pathLine = lines.find((line) => line.startsWith("worktree "));
-  if (!pathLine)
-    return null;
-  const path = pathLine.slice("worktree ".length);
-  if (!existsSync2(path) || lines.some((line) => line.startsWith("prunable"))) {
-    throw new Error(`The main checkout of the repo at ${cwd} is missing: ${path} was moved or deleted. ` + 'If you moved it, run "git worktree repair" in its new folder.');
+  if (!existsSync3(main.path) || main.prunable) {
+    throw new Error(`The main checkout of the repo at ${cwd} is missing: ${main.path} was moved or deleted. ` + 'If you moved it, run "git worktree repair" in its new folder.');
   }
-  return realpathSync(path);
+  return realpathSync2(main.path);
 }
 function findMainCheckout(git, cwd) {
   return mainCheckoutFrom(git(["worktree", "list", "--porcelain"]), cwd);
@@ -259,12 +431,12 @@ function revParseParts(revParse) {
   return { common, gitDir, top };
 }
 function checkoutRoots(parts) {
-  const root = realpathSync(parts.top);
-  const commonDir = realpathSync(parts.common);
-  return { commonDir, isWorktree: realpathSync(parts.gitDir) !== commonDir, root };
+  const root = realpathSync2(parts.top);
+  const commonDir = realpathSync2(parts.common);
+  return { commonDir, isWorktree: realpathSync2(parts.gitDir) !== commonDir, root };
 }
 function locateCheckout(cwd, options = {}) {
-  if (!existsSync2(cwd) || !statSync(cwd).isDirectory()) {
+  if (!existsSync3(cwd) || !statSync2(cwd).isDirectory()) {
     throw new Error(`resolveProject: ${cwd} is not a folder`);
   }
   const git = gitIn(cwd, gitEnv(options.env ?? process.env), undefined, options.timeFor);
@@ -295,25 +467,26 @@ function locateCheckout(cwd, options = {}) {
 }
 function projectFileFor(checkout) {
   const { root, mainCheckout } = checkout;
-  const own = join3(root, CONFIG_PATH);
-  if (existsSync2(own))
+  const own = join4(root, CONFIG_PATH);
+  if (existsSync3(own))
     return own;
   if (mainCheckout === null || mainCheckout === root)
     return null;
-  const main = join3(mainCheckout, CONFIG_PATH);
-  return existsSync2(main) ? main : null;
+  const main = join4(mainCheckout, CONFIG_PATH);
+  return existsSync3(main) ? main : null;
 }
 function ownHooksOf(checkout) {
   const file = projectFileFor(checkout);
   return file === null ? [] : readOwnHooks(file) ?? [];
 }
-var MIN_GIT_VERSION = "2.31.0", RESOLVE_GIT_TIMEOUT_MS = 5000, GIT_NOT_FOUND = "git was not found, so this project's own values cannot be read. Install git, then try again.", GIT_TIMED_OUT = "git did not answer in time", GIT_TIMED_OUT_FIX = "run `git status` in this folder; if that hangs too, fix git first, then run this again", GitTimedOutError, NO_TIME_LEFT;
+var MIN_GIT_VERSION = "2.31.0", RESOLVE_GIT_TIMEOUT_MS = 5000, GIT_NOT_FOUND = "git was not found, so this project's own values cannot be read. Install git, then try again.", GIT_TIMED_OUT2 = "git did not answer in time", GIT_TIMED_OUT_FIX = "run `git status` in this folder; if that hangs too, fix git first, then run this again", GitTimedOutError, NO_TIME_LEFT;
 var init_locate = __esm(() => {
+  init_git();
   init_config_facts();
   init_git_env();
   GitTimedOutError = class GitTimedOutError extends Error {
     constructor() {
-      super(`${GIT_TIMED_OUT}: ${GIT_TIMED_OUT_FIX}`);
+      super(`${GIT_TIMED_OUT2}: ${GIT_TIMED_OUT_FIX}`);
       this.name = "GitTimedOutError";
     }
   };
@@ -323,84 +496,6 @@ var init_locate = __esm(() => {
     stderr: "no time left in the hook's budget",
     timedOut: true
   };
-});
-
-// src/setup/file-mode.ts
-import { chmodSync, fchmodSync } from "fs";
-function failureIsFatal(platform) {
-  return platform !== "win32";
-}
-function setFileMode(fileOrFd, mode, platform = hostPlatform()) {
-  try {
-    if (typeof fileOrFd === "number")
-      fchmodSync(fileOrFd, mode);
-    else
-      chmodSync(fileOrFd, mode);
-  } catch (error) {
-    if (failureIsFatal(platform))
-      throw error;
-  }
-}
-var init_file_mode = () => {};
-
-// src/setup/write.ts
-import {
-  closeSync,
-  existsSync as existsSync3,
-  fsyncSync,
-  lstatSync,
-  mkdirSync,
-  openSync,
-  readdirSync,
-  readFileSync as readFileSync2,
-  readlinkSync,
-  realpathSync as realpathSync2,
-  renameSync,
-  statSync as statSync2,
-  unlinkSync,
-  writeFileSync
-} from "fs";
-import { basename, dirname, join as join4, resolve } from "path";
-function writeTemp(file, content, mode) {
-  const dir = dirname(file);
-  mkdirSync(dir, { recursive: true });
-  const temp = join4(dir, `.${basename(file)}.cc-smart-dev-kit-tmp-${process.pid}-${crypto.randomUUID()}`);
-  try {
-    const fd = openSync(temp, "wx", mode);
-    try {
-      writeFileSync(fd, content);
-      fsyncSync(fd);
-    } finally {
-      closeSync(fd);
-    }
-    setFileMode(temp, mode);
-  } catch (error) {
-    if (existsSync3(temp))
-      unlinkSync(temp);
-    throw error;
-  }
-  return temp;
-}
-function atomicWrite(file, content, mode, beforeRename) {
-  const temp = writeTemp(file, content, mode);
-  try {
-    beforeRename?.();
-    renameSync(temp, file);
-  } catch (error) {
-    if (existsSync3(temp))
-      unlinkSync(temp);
-    throw error;
-  }
-}
-var init_write = __esm(() => {
-  init_file_mode();
-});
-
-// src/setup/lock.ts
-var FALLBACK_STALE_MS;
-var init_lock = __esm(() => {
-  init_file_mode();
-  FALLBACK_STALE_MS = 10 * 60 * 1000;
 });
 
 // src/update/state.ts
@@ -439,7 +534,7 @@ var init_state = __esm(() => {
 });
 // src/build-info/index.ts
 var info = {
-  version: "6.7.1",
+  version: "6.7.2",
   repo: "sellanybiz/cc-smart-dev-kit",
   dependencies: [
     {
@@ -2235,107 +2330,6 @@ var init_words = __esm(() => {
   PHASE_RULE = `1-${MAX_PHASE} characters: ASCII letters, digits, ".", "_" and "-", a letter or a digit at each end, never "--"`;
   OVERLAP_WARNS = `the answer warns, and both plans get an ${OVERLAP_NOTE} note`;
   PLAN_FILES_WORDS = `Plan task only: the repo-relative paths the plan changes, with / separators; a folder ends in /. Two plans overlap when a path is equal or inside the other's folder (inside a plans.appendOnly folder, only the same file). An overlap with a reserved or running plan never refuses: ${OVERLAP_WARNS}. The list replaces the stored one; an empty list clears it.`;
-});
-
-// src/path-compare.ts
-import { dirname as dirname4, resolve as resolve2 } from "path";
-function isInside(path, folder, ignoreCase = IGNORE_CASE) {
-  const child = pathForm(path, ignoreCase);
-  const parent = pathForm(folder, ignoreCase);
-  return child === parent || child.startsWith(`${parent}/`);
-}
-function pathForm(path, ignoreCase = IGNORE_CASE) {
-  const forward = resolve2(path.replace(/\\/g, "/")).replace(/\\/g, "/").replace(/\/+$/, "");
-  return ignoreCase ? forward.toLowerCase() : forward;
-}
-var IGNORE_CASE;
-var init_path_compare = __esm(() => {
-  IGNORE_CASE = process.platform === "win32";
-});
-
-// src/workflow/reviews.ts
-import { createHash as createHash2 } from "crypto";
-function repoKey(repo) {
-  return createHash2("sha256").update(repo).digest("hex").slice(0, 16);
-}
-var START_KEPT_MS;
-var init_reviews = __esm(() => {
-  init_lock();
-  init_write();
-  START_KEPT_MS = 24 * 60 * 60 * 1000;
-});
-
-// src/hooks/git.ts
-function runGit(cwd, args, env, timeoutMs = 15000, own = {}, input) {
-  return spawnGit(cwd, args, env, timeoutMs, own, true, input);
-}
-function spawnGit(cwd, args, env, timeoutMs, own, trim, input) {
-  const bytes = input === undefined ? undefined : new TextEncoder().encode(input);
-  const run = spawnGitBytes(cwd, args, env, timeoutMs, own, bytes);
-  const out = new TextDecoder("utf-8", { ignoreBOM: true }).decode(run.out);
-  return { ...run, out: trim ? out.trim() : out };
-}
-function spawnGitBytes(cwd, args, env, timeoutMs, own, input) {
-  try {
-    const result = Bun.spawnSync(["git", ...args], {
-      cwd,
-      env: { ...gitEnv(env), ...own },
-      stdin: input ?? "ignore",
-      stdout: "pipe",
-      stderr: "pipe",
-      timeout: timeoutMs,
-      windowsHide: true
-    });
-    const err = result.signalCode ? GIT_TIMED_OUT2 : result.stderr.toString().trim();
-    const code = result.signalCode ? null : result.exitCode;
-    return { ok: result.exitCode === 0, out: result.stdout, err, code };
-  } catch (error) {
-    const err = error instanceof Error ? error.message : String(error);
-    return { ok: false, out: new Uint8Array, err, code: null };
-  }
-}
-function parseWorktreeList(porcelain) {
-  const worktrees = [];
-  for (const block of porcelain.split(/\r?\n\r?\n/)) {
-    const lines = block.split(/\r?\n/).filter((line) => line !== "");
-    const value = (key) => lines.find((line) => line.startsWith(`${key} `))?.slice(key.length + 1);
-    const flag = (key) => lines.some((line) => line === key || line.startsWith(`${key} `));
-    const path = value("worktree");
-    if (path === undefined)
-      continue;
-    const lockReason = value("locked")?.trim();
-    worktrees.push({
-      path,
-      head: value("HEAD") ?? "",
-      branch: value("branch")?.replace(/^refs\/heads\//, "") ?? null,
-      locked: flag("locked"),
-      ...lockReason === undefined || lockReason === "" ? {} : { lockReason },
-      prunable: flag("prunable")
-    });
-  }
-  return worktrees;
-}
-function listWorktrees(cwd, env, timeoutMs = 15000) {
-  const listed = runGit(cwd, ["worktree", "list", "--porcelain"], env, timeoutMs);
-  if (!listed.ok)
-    throw new Error(`git worktree list failed: ${listed.err}`);
-  return parseWorktreeList(listed.out);
-}
-function innermostWorktree(path, worktrees) {
-  let deepest = null;
-  for (const worktree of worktrees) {
-    if (isInside(path, worktree) && (deepest === null || worktree.length > deepest.length)) {
-      deepest = worktree;
-    }
-  }
-  return deepest;
-}
-var GIT_TIMED_OUT2 = "timed out", GUARD_GIT_TIMEOUT_MS = 5000;
-var init_git = __esm(() => {
-  init_path_compare();
-  init_git_env();
-  init_reviews();
-  init_path_compare();
 });
 
 // node_modules/zod/v4/core/util.js
@@ -10031,6 +10025,11 @@ var init_auto_start = __esm(() => {
 init_paths2();
 import { appendFileSync as appendFileSync3 } from "fs";
 
+// src/error-message.ts
+function messageOf(error) {
+  return error instanceof Error ? error.message : String(error);
+}
+
 // src/gateway/plain-text.ts
 var CONTROL = /[\p{Cc}\p{Cf}]/gu;
 var CONTROL_BUT_LINES = /[^\P{Cc}\n\t]|\p{Cf}/gu;
@@ -10090,7 +10089,7 @@ import { join as join6 } from "path";
 init_write();
 init_state();
 import { appendFileSync as appendFileSync2, mkdirSync as mkdirSync3, readFileSync as readFileSync4, statSync as statSync4 } from "fs";
-import { dirname as dirname2 } from "path";
+import { dirname as dirname3 } from "path";
 function cutBack(file) {
   let size;
   try {
@@ -10106,7 +10105,7 @@ function cutBack(file) {
 `) + 1), 384);
 }
 function appendJsonLine(file, value) {
-  mkdirSync3(dirname2(file), { recursive: true, mode: 448 });
+  mkdirSync3(dirname3(file), { recursive: true, mode: 448 });
   cutBack(file);
   appendFileSync2(file, `${JSON.stringify(value)}
 `, { mode: 384 });
@@ -10127,7 +10126,7 @@ init_build_info();
 init_locate();
 init_file_mode();
 init_write();
-import { createHash } from "crypto";
+import { createHash as createHash2 } from "crypto";
 import {
   accessSync,
   constants,
@@ -10138,8 +10137,8 @@ import {
   statSync as statSync5,
   unlinkSync as unlinkSync2
 } from "fs";
-import { dirname as dirname3, join as join7 } from "path";
-var PARSER_FINGERPRINT = "cf83d28a9adcc460bb6ed14ca8396360e3e093bc64ef4a44a7d36ab2374eb526";
+import { dirname as dirname4, join as join7 } from "path";
+var PARSER_FINGERPRINT = "1fe75b2f95408e56c9ced0e05df3707f931e4a6b8d2641c848d57436130e8457";
 var CHECKED_DIR = "checked";
 var CHECKED_CACHE_LIMIT = 64;
 var CHECKED_FILE_MAX_BYTES = 256 * 1024;
@@ -10165,7 +10164,7 @@ async function loadSibling() {
   return loaded;
 }
 function checkedKey(fingerprint, kind, bytes) {
-  return createHash("sha256").update(`${fingerprint}
+  return createHash2("sha256").update(`${fingerprint}
 ${kind}
 `).update(bytes).digest("hex");
 }
@@ -10297,9 +10296,6 @@ function addContext(event, text) {
 
 // src/hooks/run.ts
 var HOOK_LOG_ENV = "CC_SMART_DEV_KIT_HOOK_LOG";
-function errorMessage(error) {
-  return error instanceof Error ? error.message : String(error);
-}
 function crashResult(spec, why, input, event, context) {
   const line = {
     exitCode: spec.crashExitCode ?? 0,
@@ -10326,7 +10322,7 @@ function recordAsk(spec, input, result, context) {
       reason: maskedLine(reason, [], ASK_REASON_MAX, { mark: "..." })
     });
   } catch (error) {
-    const note = `cc-smart-dev-kit ${spec.name}: the ask could not be recorded (${errorMessage(error)})`;
+    const note = `cc-smart-dev-kit ${spec.name}: the ask could not be recorded (${messageOf(error)})`;
     return { ...result, stderr: result.stderr === undefined ? note : `${result.stderr}
 ${note}` };
   }
@@ -10351,7 +10347,7 @@ async function answer(spec, input, context, observed) {
     try {
       checkout = locateCheckout(cwd, { env });
     } catch (error) {
-      return await outside(input, event, errorMessage(error), context);
+      return await outside(input, event, messageOf(error), context);
     }
     if (checkout === null)
       return await outside(input, event, `${cwd} is not in a git checkout`, context);
@@ -10373,7 +10369,7 @@ async function answer(spec, input, context, observed) {
       ...context.start !== undefined && { start: context.start }
     });
   } catch (error) {
-    return crashResult(spec, errorMessage(error), input, event, context);
+    return crashResult(spec, messageOf(error), input, event, context);
   }
 }
 async function handleHook(spec, text, env, nowMs = Date.now(), start, observed = {}) {
@@ -10547,6 +10543,49 @@ function cappedHookList(items, render, command, separator = ", ") {
   if (items.length > HOOK_LIST_LIMIT)
     shown.push(`+${items.length - HOOK_LIST_LIMIT} more: ${command}`);
   return shown.join(separator);
+}
+
+// src/hooks/gh.ts
+var GH_TIMEOUT_MS = 1e4;
+function ghMissing(env) {
+  try {
+    return Bun.which("gh", { PATH: env.PATH ?? "" }) === null;
+  } catch {
+    return false;
+  }
+}
+function ghSpawnOptions({ env, folder, timeoutMs }) {
+  return {
+    ...folder === undefined ? {} : { cwd: folder },
+    env,
+    stdout: "pipe",
+    stderr: "pipe",
+    timeout: timeoutMs,
+    windowsHide: true
+  };
+}
+function ghEnded(code, signal, out, err) {
+  if (signal !== null && signal !== undefined) {
+    const kind = signal === "SIGTERM" ? "timeout" : "failed";
+    return { code: null, err: err.trim(), kind, out, signal };
+  }
+  return { code, err: err.trim(), kind: code === 0 ? "ok" : "failed", out };
+}
+function ghNotStarted(error, env) {
+  return {
+    code: null,
+    err: error instanceof Error ? error.message : String(error),
+    kind: ghMissing(env) ? "missing" : "failed",
+    out: ""
+  };
+}
+function runGhSync(args, call) {
+  try {
+    const run = Bun.spawnSync(["gh", ...args], { ...ghSpawnOptions(call), stdin: "ignore" });
+    return ghEnded(run.exitCode, run.signalCode, run.stdout.toString(), run.stderr.toString());
+  } catch (error) {
+    return ghNotStarted(error, call.env);
+  }
 }
 
 // src/hooks/after-merge.ts
@@ -11280,7 +11319,6 @@ function pullRequestCallsWithAliases(command, folder, env, timeoutMs = ALIAS_TIM
   }
   return pullRequestCalls(command, aliases, dialect);
 }
-var GH_TIMEOUT_MS = 1e4;
 var ALIAS_TIMEOUT_MS = 3000;
 function onceAliases(folder, env, timeoutMs) {
   let read = null;
@@ -11292,23 +11330,10 @@ function onceAliases(folder, env, timeoutMs) {
 function readGhAliases(folder, env, timeoutMs = ALIAS_TIMEOUT_MS) {
   if (timeoutMs <= 0)
     return null;
-  try {
-    const run = Bun.spawnSync(["gh", "alias", "list"], {
-      cwd: folder,
-      env,
-      stdin: "ignore",
-      stdout: "pipe",
-      stderr: "pipe",
-      timeout: timeoutMs
-    });
-    const out = run.stdout.toString();
-    if (run.exitCode !== 0) {
-      return /no aliases configured/i.test(`${out}${run.stderr.toString()}`) ? new Map : null;
-    }
-    return parseAliasList(out);
-  } catch {
-    return null;
-  }
+  const run = runGhSync(["alias", "list"], { env, folder, timeoutMs });
+  if (run.kind === "ok")
+    return parseAliasList(run.out);
+  return /no aliases configured/i.test(`${run.out}${run.err}`) ? new Map : null;
 }
 function parseAliasList(text) {
   const aliases = new Map;
@@ -11464,20 +11489,15 @@ async function otherOpenPlans(context) {
 function viewPullRequest(ref, repo, folder, env, timeoutMs) {
   if (timeoutMs <= 0)
     return null;
-  try {
-    const view = Bun.spawnSync([
-      "gh",
-      "pr",
-      "view",
-      ...ref === null ? [] : [ref],
-      ...repo === null ? [] : ["--repo", repo],
-      "--json",
-      PULL_REQUEST_FIELDS
-    ], { cwd: folder, env, stdin: "ignore", stdout: "pipe", stderr: "pipe", timeout: timeoutMs });
-    return view.exitCode === 0 ? parsePullRequestView(view.stdout.toString()) : null;
-  } catch {
-    return null;
-  }
+  const view = runGhSync([
+    "pr",
+    "view",
+    ...ref === null ? [] : [ref],
+    ...repo === null ? [] : ["--repo", repo],
+    "--json",
+    PULL_REQUEST_FIELDS
+  ], { env, folder, timeoutMs });
+  return view.kind === "ok" ? parsePullRequestView(view.out) : null;
 }
 function seenFile(repo, number, env) {
   const key = createHash4("sha256").update(repo).digest("hex").slice(0, 16);

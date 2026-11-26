@@ -97,6 +97,11 @@ function claudeMemDataDir(env, home) {
 import { existsSync as existsSync12, readdirSync as readdirSync9 } from "fs";
 import { join as join17 } from "path";
 
+// src/error-message.ts
+function messageOf(error) {
+  return error instanceof Error ? error.message : String(error);
+}
+
 // src/hooks/git.ts
 import { readFileSync as readFileSync3, realpathSync as realpathSync2 } from "fs";
 import { basename as basename2, dirname as dirname3, join as join4, resolve as resolve3 } from "path";
@@ -345,7 +350,8 @@ function parseWorktreeList(porcelain) {
       branch: value("branch")?.replace(/^refs\/heads\//, "") ?? null,
       locked: flag("locked"),
       ...lockReason === undefined || lockReason === "" ? {} : { lockReason },
-      prunable: flag("prunable")
+      prunable: flag("prunable"),
+      ...flag("bare") ? { bare: true } : {}
     });
   }
   return worktrees;
@@ -6236,7 +6242,7 @@ function preprocess(fn, schema) {
 }
 // src/build-info/index.ts
 var info = {
-  version: "6.7.1",
+  version: "6.7.2",
   repo: "sellanybiz/cc-smart-dev-kit",
   dependencies: [
     {
@@ -8314,21 +8320,13 @@ function mainCheckoutFrom(list, cwd) {
     throw new GitTimedOutError;
   if (!list.ok)
     throw new Error(`git worktree list failed in ${cwd}: ${list.stderr.trim()}`);
-  const [firstEntry = ""] = list.stdout.split(`
-
-`);
-  const lines = firstEntry.split(`
-`);
-  if (lines.includes("bare"))
+  const [main] = parseWorktreeList(list.stdout);
+  if (main === undefined || main.bare === true)
     return null;
-  const pathLine = lines.find((line) => line.startsWith("worktree "));
-  if (!pathLine)
-    return null;
-  const path = pathLine.slice("worktree ".length);
-  if (!existsSync4(path) || lines.some((line) => line.startsWith("prunable"))) {
-    throw new Error(`The main checkout of the repo at ${cwd} is missing: ${path} was moved or deleted. ` + 'If you moved it, run "git worktree repair" in its new folder.');
+  if (!existsSync4(main.path) || main.prunable) {
+    throw new Error(`The main checkout of the repo at ${cwd} is missing: ${main.path} was moved or deleted. ` + 'If you moved it, run "git worktree repair" in its new folder.');
   }
-  return realpathSync3(path);
+  return realpathSync3(main.path);
 }
 function findMainCheckout(git, cwd) {
   return mainCheckoutFrom(git(["worktree", "list", "--porcelain"]), cwd);
@@ -9277,6 +9275,49 @@ import { existsSync as existsSync10, mkdtempSync, readdirSync as readdirSync7, r
 import { tmpdir } from "os";
 import { basename as basename5, join as join15 } from "path";
 
+// src/hooks/gh.ts
+var GH_TIMEOUT_MS = 1e4;
+function ghMissing(env) {
+  try {
+    return Bun.which("gh", { PATH: env.PATH ?? "" }) === null;
+  } catch {
+    return false;
+  }
+}
+function ghSpawnOptions({ env, folder, timeoutMs }) {
+  return {
+    ...folder === undefined ? {} : { cwd: folder },
+    env,
+    stdout: "pipe",
+    stderr: "pipe",
+    timeout: timeoutMs,
+    windowsHide: true
+  };
+}
+function ghEnded(code, signal, out, err) {
+  if (signal !== null && signal !== undefined) {
+    const kind = signal === "SIGTERM" ? "timeout" : "failed";
+    return { code: null, err: err.trim(), kind, out, signal };
+  }
+  return { code, err: err.trim(), kind: code === 0 ? "ok" : "failed", out };
+}
+function ghNotStarted(error, env) {
+  return {
+    code: null,
+    err: error instanceof Error ? error.message : String(error),
+    kind: ghMissing(env) ? "missing" : "failed",
+    out: ""
+  };
+}
+function runGhSync(args, call) {
+  try {
+    const run = Bun.spawnSync(["gh", ...args], { ...ghSpawnOptions(call), stdin: "ignore" });
+    return ghEnded(run.exitCode, run.signalCode, run.stdout.toString(), run.stderr.toString());
+  } catch (error) {
+    return ghNotStarted(error, call.env);
+  }
+}
+
 // src/hooks/local-files.ts
 import {
   closeSync as closeSync3,
@@ -9996,7 +10037,6 @@ function recordedKeepWhy(branch, recorded) {
   const number = recorded.byBranch.get(branch);
   return number === undefined ? null : `task #${String(number)} still records it`;
 }
-var GH_TIMEOUT_MS = 1e4;
 function cherryOnBase(repo, baseRef, head, env) {
   const run = runGit(repo, ["cherry", baseRef, head], env);
   if (!run.ok)
@@ -10007,37 +10047,35 @@ function cherryOnBase(repo, baseRef, head, env) {
 }
 var GH_PR_LIMIT = "30";
 function pullRequestState(repo, branch, head, env) {
+  const run = runGhSync([
+    "pr",
+    "list",
+    "--head",
+    branch,
+    "--state",
+    "all",
+    "--json",
+    "state,headRefOid",
+    "--limit",
+    GH_PR_LIMIT
+  ], { env, folder: repo, timeoutMs: GH_TIMEOUT_MS });
+  if (run.kind !== "ok")
+    return "unknown";
+  let parsed;
   try {
-    if (Bun.which("gh", { PATH: env.PATH ?? "" }) === null)
-      return "unknown";
-    const run = Bun.spawnSync([
-      "gh",
-      "pr",
-      "list",
-      "--head",
-      branch,
-      "--state",
-      "all",
-      "--json",
-      "state,headRefOid",
-      "--limit",
-      GH_PR_LIMIT
-    ], { cwd: repo, env, stdin: "ignore", stderr: "pipe", stdout: "pipe", timeout: GH_TIMEOUT_MS });
-    if (run.exitCode !== 0)
-      return "unknown";
-    const parsed = JSON.parse(run.stdout.toString() || "null");
-    if (!Array.isArray(parsed))
-      return "unknown";
-    const rows = parsed.filter((row) => row !== null && typeof row === "object");
-    const at = (state) => rows.some((row) => row.state === state && row.headRefOid === head);
-    if (at("MERGED"))
-      return "merged";
-    if (rows.some((row) => row.state === "OPEN"))
-      return "open";
-    return at("CLOSED") ? "closed" : "none";
+    parsed = JSON.parse(run.out || "null");
   } catch {
     return "unknown";
   }
+  if (!Array.isArray(parsed))
+    return "unknown";
+  const rows = parsed.filter((row) => row !== null && typeof row === "object");
+  const at = (state) => rows.some((row) => row.state === state && row.headRefOid === head);
+  if (at("MERGED"))
+    return "merged";
+  if (rows.some((row) => row.state === "OPEN"))
+    return "open";
+  return at("CLOSED") ? "closed" : "none";
 }
 function pullRequestMerged(repo, branch, head, env) {
   return pullRequestState(repo, branch, head, env) === "merged";
@@ -10846,9 +10884,6 @@ function sessionsToKeep(deps, claudeConfigDir) {
     ...running,
     { cwd: deps.keep, name: "the session that started the clean", pid: 0, sessionId: "starting" }
   ];
-}
-function messageOf(error) {
-  return error instanceof Error ? error.message : String(error);
 }
 function summary(repo, trigger, removed, forgotten, failed, kept, leftovers) {
   const parts = [

@@ -122,7 +122,7 @@ function atomicWrite(file, content, mode, beforeRename) {
 
 // src/gateway/config.ts
 import { createHash } from "crypto";
-import { mkdirSync as mkdirSync3, readFileSync as readFileSync2, statSync as statSync3 } from "fs";
+import { mkdirSync as mkdirSync3, statSync as statSync3 } from "fs";
 
 // node_modules/zod/v4/core/util.js
 function getEnumValues(entries) {
@@ -5956,6 +5956,24 @@ function refine(fn, _params = {}) {
 function superRefine(fn, params) {
   return _superRefine(fn, params);
 }
+// src/error-message.ts
+function messageOf(error) {
+  return error instanceof Error ? error.message : String(error);
+}
+
+// src/setup/user-json.ts
+import { readFileSync as readFileSync2 } from "fs";
+var BOM = "\uFEFF";
+function withoutBom(text) {
+  return text.startsWith(BOM) ? text.slice(BOM.length) : text;
+}
+function parseUserJson(text) {
+  return JSON.parse(withoutBom(text));
+}
+function readUserJson(file) {
+  return parseUserJson(readFileSync2(file, "utf8"));
+}
+
 // src/gateway/history.ts
 import { Database } from "bun:sqlite";
 import { mkdirSync as mkdirSync2, statSync as statSync2 } from "fs";
@@ -6722,10 +6740,6 @@ function judgeStandInState(config) {
   }
   return fallbackOn(config, JUDGE_SLOT) ? "ready" : "off";
 }
-function messageOf(error) {
-  return error instanceof Error ? error.message : String(error);
-}
-
 class ConfigError extends Error {
   name = "ConfigError";
 }
@@ -6768,7 +6782,7 @@ function loadConfigFile(path, platform = hostPlatform()) {
   }
   let raw;
   try {
-    raw = JSON.parse(readFileSync2(path, "utf8"));
+    raw = readUserJson(path);
   } catch (error) {
     throw new ConfigError(`${path} is not valid JSON. Fix it by hand.`, { cause: error });
   }
