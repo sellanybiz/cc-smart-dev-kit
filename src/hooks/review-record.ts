@@ -55,20 +55,23 @@
  * and the same one merge-check reads.
  *
  * What it never records, on purpose: an agent that is not on the list; a run whose `cwd` is
- * inside a subagent's own worktree (`.claude/worktrees/agent-<hex>`, the engine's shape: its
- * branch is a fresh one from the base, never the commit under review); a folder with no
- * commit yet; and a stopped agent that failed —
+ * inside the review agent's own worktree (`.claude/worktrees/agent-<hex>` with its own id as the
+ * hex, `inOwnWorktree`: its branch is a fresh one from the base, never the commit under review —
+ * another agent's worktree, a builder's the session stands in, records as any folder does); a
+ * folder with no commit yet; and a stopped agent that failed —
  * `SubagentStop` is not told, and a review that did not finish is no review, so the guard
  * asks the person.
  *
  * Neither event takes context from this hook: success prints nothing at all. A record that
- * cannot be written, and a stop that records nothing for a reason the person can act on, is
- * one line on stderr, exit 0 — a subagent must always start and finish
- * (`.claude/rules/hooks-guards.md` § Fail closed).
+ * cannot be written, and the stop of a listed review agent that records nothing (its own
+ * worktree, a run that was not a review, no commit, no start seen), is one line on stderr with
+ * the reason, exit 0 — a subagent must always start and finish
+ * (`.claude/rules/hooks-guards.md` § Fail closed). The start never says anything: its stop does.
  */
 import type { CcSmartDevKitConfig } from "../project/config";
 import { type ResolvedWorkflow, resolveWorkflow } from "../workflow/resolve";
 import {
+  agentIdKey,
   noteReviewStart,
   recordReview,
   recordsReview,
@@ -132,13 +135,16 @@ function said(why: string): HookResult {
 }
 
 /**
- * True when `cwd` is inside the worktree a subagent worked in. The engine's shape
- * (`.claude/worktrees/agent-<hex>`, `hooks.md`) is read by the shape alone, whatever the agent
- * id: a record must never name a branch that was cut from the base rather than the commit a
- * reviewer read.
+ * True when `cwd` is inside the review agent's own worktree (`isolation: "worktree"`): the
+ * innermost `.claude/worktrees/agent-<hex>` it is in names this agent's id. That branch was cut
+ * from the base, never the commit a reviewer read. Another agent's worktree is a folder the
+ * session works in (a builder's, say), and its commit is the one under review.
  */
-export function inSubagentWorktree(cwd: string): boolean {
-  return subagentWorktreeByShape(cwd) !== null;
+export function inOwnWorktree(cwd: string, agentId: string): boolean {
+  const folder = subagentWorktreeByShape(cwd);
+  if (folder === null) return false;
+  const name = folder.split(/[\\/]/).at(-1) ?? "";
+  return agentIdKey(name) === agentIdKey(agentId);
 }
 
 export async function reviewRecord(context: HookContext): Promise<HookResult> {
@@ -149,7 +155,6 @@ export async function reviewRecord(context: HookContext): Promise<HookResult> {
   const agent = agentTypeOf(input);
   if (agent === null) return SILENT;
   const agentId = stringField(input.agent_id);
-  if (inSubagentWorktree(cwd)) return SILENT;
 
   let resolved: ResolvedWorkflow;
   try {
@@ -165,10 +170,17 @@ export async function reviewRecord(context: HookContext): Promise<HookResult> {
   if (agentId === null) return SILENT;
 
   const repository = project.mainCheckout ?? project.root;
-  const commit = headCommit(cwd, env);
+  const isolated = inOwnWorktree(cwd, agentId);
+  // The stop a block caused (`subagent-background` blocked the first one, say) follows a stop
+  // this hook already answered: that one took the start and recorded the review, or said why
+  // not. Saying it again would be noise, and "no start was seen" would be false.
+  const notRecorded = (why: string, next = ""): HookResult =>
+    input.stop_hook_active === true ? SILENT : said(`${why}, so no review is recorded${next}`);
   try {
     if (event === "SubagentStart") {
-      // No commit yet: there is nothing a review could be recorded for, and nothing worth saying.
+      if (isolated) return SILENT;
+      const commit = headCommit(cwd, env);
+      // No commit yet: there is nothing a review could be recorded for; the stop says so.
       if (commit !== null) {
         await noteReviewStart(
           reviewStartsFile(paths.stateDir, repository),
@@ -181,17 +193,21 @@ export async function reviewRecord(context: HookContext): Promise<HookResult> {
       return SILENT;
     }
     const start = await takeReviewStart(reviewStartsFile(paths.stateDir, repository), agentId);
-    const transcript = stringField(input.agent_transcript_path);
-    if (transcript === null || !isReviewRun(transcript)) return SILENT;
-    if (commit === null) return SILENT;
-    if (start === null) {
-      // The stop a block caused (`subagent-background` blocked the first one, say): that first
-      // stop already took the start and recorded the review, so "no start was seen" would be
-      // false, and the agent would run the review again for nothing.
-      if (input.stop_hook_active === true) return SILENT;
-      return said(
-        "no start was seen for this review agent, so no review is recorded: run the review again",
+    if (isolated) {
+      return notRecorded(
+        "this review agent worked in its own worktree, a branch cut from the base rather than the commit under review",
+        ": run the reviewer without isolation",
       );
+    }
+    const transcript = stringField(input.agent_transcript_path);
+    if (transcript === null || !isReviewRun(transcript)) {
+      return notRecorded(
+        `this run was not a review from start to end (its brief and every later prompt need the line "${REVIEW_MODE_MARKER}"), or its transcript cannot be read`,
+      );
+    }
+    if (headCommit(cwd, env) === null) return notRecorded("the folder has no commit yet");
+    if (start === null) {
+      return notRecorded("no start was seen for this review agent", ": run the review again");
     }
     // The commit the reviewer started on is the one it read: commits made since are change
     // after the review, which merge-check measures (D17).
