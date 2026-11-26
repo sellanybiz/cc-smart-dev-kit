@@ -1632,6 +1632,27 @@ test("adopt moves a dead lead's plans to this session, and the child's take with
   expect(p.lines.join("\n")).not.toContain("Adopted plan");
 });
 
+test("adopt under a requires the kit does not meet adopts no plan and says why", async () => {
+  const p = planWorld();
+  p.plan("alpha", ["src/a/"]);
+  expect(await runHerdr([...planLaunch, "--plan", "alpha", "--", "work"], p.ctx)).toBe(0);
+  const before = allTasks(p.db, p.project);
+  const file = join(p.ctx.cwd, ".claude", "cc-smart-dev-kit.json");
+  mkdirSync(dirname(file), { recursive: true });
+  writeFileSync(file, JSON.stringify({ requires: ">=99.0" }));
+  p.ctx.caller = () => ({ sessionId: "me", pid: 4303, procStart: "43030" });
+  p.ctx.process = ENDED;
+  p.lines.length = 0;
+  expect(await runHerdr(["adopt"], p.ctx)).toBe(0);
+  const text = p.lines.join("\n");
+  expect(text).toContain(
+    `Plans were not adopted: Task writes are refused: ${file}: this project needs cc-smart-dev-kit >=99.0`,
+  );
+  expect(text).toContain("Fix: If the kit on disk already meets it, restart this session");
+  expect(text).not.toContain("Adopted plan");
+  expect(allTasks(p.db, p.project)).toEqual(before);
+});
+
 test("adopt leaves a lead that runs, or cannot be proved gone, with its plans", async () => {
   const p = planWorld();
   p.plan("alpha", ["src/a/"]);
@@ -2009,6 +2030,34 @@ test("plans --reserve and --release in a project with no store refuse, and a pla
   bare.ctx.caller = () => LEAD;
   expect(await runHerdr(["plans"], bare.ctx)).toBe(0);
   expect(bare.lines.join("\n")).toContain("No task store exists yet");
+});
+
+test("a requires the kit does not meet refuses every plan command and a task start before anything is reserved or launched", async () => {
+  const p = planWorld();
+  p.plan("alpha", ["src/a/"]);
+  const loose = createTask(p.db, { project: p.project, subject: "loose" }, LEAD, 60);
+  if (!loose.ok) throw new Error(loose.why);
+  const file = join(p.ctx.cwd, ".claude", "cc-smart-dev-kit.json");
+  mkdirSync(dirname(file), { recursive: true });
+  writeFileSync(file, JSON.stringify({ requires: ">=99.0" }));
+  const before = allTasks(p.db, p.project);
+  const commands = [
+    ["plans"],
+    [...RESERVE, "alpha"],
+    [...planLaunch, "--plan", "alpha", "--", "work"],
+    [...launch, "--task", `#${loose.value.number}`, "--", "work"],
+  ];
+  for (const args of commands) {
+    p.lines.length = 0;
+    expect({ args, code: await runHerdr(args, p.ctx) }).toEqual({ args, code: 1 });
+    const text = p.lines.join("\n");
+    expect(text).toContain(
+      `Task writes are refused: ${file}: this project needs cc-smart-dev-kit >=99.0; you have ${VERSION}`,
+    );
+    expect(text).toContain("Fix: If the kit on disk already meets it, restart this session");
+    p.noRun();
+  }
+  expect(allTasks(p.db, p.project)).toEqual(before);
 });
 
 test("plans --reserve reads the same gates as a hand-out: a blocked, a file-less or an overlapping plan is not reserved", async () => {

@@ -7,7 +7,7 @@ import { parseOptions } from "../cli/args";
 import { cliPaths } from "../cli/paths";
 import { type ListedWorktree, parseWorktreeList, runGit } from "../hooks/git";
 import { locateCheckout } from "../project/resolve";
-import { taskContext } from "../tasks/context";
+import { type ProjectConfigRead, taskContext, taskWriteRefusal } from "../tasks/context";
 import { createTaskOps } from "../tasks/ops";
 import { branchTip } from "../tasks/stack-proof";
 import { openWorkDb, workDbFile } from "../tasks/work/db";
@@ -814,8 +814,13 @@ async function start(a: Start, ctx: HerdrContext, r: HcRunner): Promise<number> 
  * since only the lead's identity moves (`adoptLeadPlans`). "Dead" is `ended`, a whole session
  * over, never a dead pid alone (a reopened session keeps its id in a new process).
  */
-function adoptPlans(ctx: HerdrContext, project: string): void {
+function adoptPlans(ctx: HerdrContext, project: string, projectConfig: ProjectConfigRead): void {
   if (!existsSync(workDbFile(ctx.paths))) return;
+  const gate = taskWriteRefusal(projectConfig, ctx.env);
+  if (gate !== null) {
+    ctx.out.line("warn", `Plans were not adopted: ${gate.why}`, { fix: gate.fix });
+    return;
+  }
   const who = ctx.caller ? ctx.caller() : callerOf({ env: ctx.env });
   if (who === null || !who.sessionId) {
     ctx.out.line("warn", "Plans were not adopted: this session cannot be resolved.");
@@ -924,6 +929,12 @@ async function startChild(
       ctx,
       "A task cannot cross projects or machines. Put its text in the brief instead.",
     );
+  // A start that binds its child to a task writes that task after the launch: a project file the
+  // task tools refuse to write with stops it here, before anything launches.
+  if ((a.task || a.plan) && caller.ok) {
+    const gate = taskWriteRefusal(caller.projectConfig, ctx.env);
+    if (gate !== null) return refuse(ctx, gate.why, gate.fix);
+  }
   if (a.task) {
     if (!existsSync(workDbFile(ctx.paths)))
       return refuse(ctx, `Task ${a.task} must exist and be open in this project before launch.`);
@@ -1598,7 +1609,7 @@ export async function runHerdr(args: string[], ctx: HerdrContext): Promise<numbe
           }
         }
         show(ctx, adopted);
-        adoptPlans(ctx, project.project);
+        adoptPlans(ctx, project.project, project.projectConfig);
         return 0;
       }
       case "plans": {

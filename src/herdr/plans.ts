@@ -19,7 +19,7 @@ import { type ListedWorktree, listWorktrees, runGit, runGitRaw, samePath } from 
 import type { Env } from "../hooks/run";
 import { locateCheckout } from "../project/resolve";
 import { shellWord } from "../shell/quote";
-import { taskContext } from "../tasks/context";
+import { taskContext, taskWriteRefusal } from "../tasks/context";
 import { planFilesCheck } from "../tasks/files-check";
 import { branchTip, judgeStacks, provedPairs, type StackJudgment } from "../tasks/stack-proof";
 import { openWorkDb, type WorkDb, workDbFile } from "../tasks/work/db";
@@ -1217,6 +1217,9 @@ export function openPlansWorld(
       why: "Plans live in a git repository: this folder is in none.",
       fix: "Run it in the project's git checkout.",
     };
+  // Every plan command may write the store (a reservation, a release): the task tools' one gate.
+  const gate = taskWriteRefusal(project.projectConfig, ctx.env);
+  if (gate !== null) return { ok: false, ...gate };
   const who = ctx.caller ? ctx.caller() : callerOf({ env: ctx.env });
   if (who === null || !who.sessionId)
     return {

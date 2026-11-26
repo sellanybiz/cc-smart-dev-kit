@@ -14,8 +14,14 @@
  *   split one project's tasks in two.
  */
 import { realpathSync } from "node:fs";
+import { VERSION } from "../build-info";
+import { cliPaths } from "../cli/paths";
 import type { Env } from "../hooks/run";
-import type { CcSmartDevKitConfig } from "../project/config";
+import {
+  type CcSmartDevKitConfig,
+  CcSmartDevKitVersionError,
+  loadCcSmartDevKitConfig,
+} from "../project/config";
 import {
   type Checkout,
   checkoutFailure,
@@ -23,8 +29,10 @@ import {
   locateCheckout,
   locateCheckoutAsync,
   type Project,
+  projectFileFor,
   type ResolveOptions,
 } from "../project/resolve";
+import { findUserInstall } from "../setup/installed-plugins";
 import { repoKey } from "../workflow/reviews";
 import { DEFAULT_STALE_DAYS } from "./deploy/check";
 import { deployTasksDir } from "./deploy/files";
@@ -45,7 +53,15 @@ export type ProjectTasks =
 /** The project's `.claude/cc-smart-dev-kit.json` as the checkout reads it, or why it cannot be read. */
 export type ProjectConfigRead =
   | { ok: true; config: CcSmartDevKitConfig | null }
-  | { ok: false; why: string };
+  | {
+      ok: false;
+      why: string;
+      /**
+       * The file whose `requires` this kit does not meet (`CcSmartDevKitVersionError`), which
+       * another kit version can read; null for any other error.
+       */
+      requiresFile: string | null;
+    };
 
 export type TaskContext =
   | {
@@ -145,7 +161,13 @@ function contextOf(checkout: Checkout | null, cwd: string, read?: Project): Task
     config = (read ?? loadProjectConfig(checkout)).config;
   } catch (error) {
     const why = checkoutFailure(error);
-    return { ...base, projectTasks: { ok: false, why }, projectConfig: { ok: false, why } };
+    const requiresFile =
+      error instanceof CcSmartDevKitVersionError ? projectFileFor(checkout) : null;
+    return {
+      ...base,
+      projectTasks: { ok: false, why },
+      projectConfig: { ok: false, why, requiresFile },
+    };
   }
   const settings = config?.tasks;
   const root = checkout.root;
@@ -159,4 +181,44 @@ function contextOf(checkout: Checkout | null, cwd: string, read?: Project): Task
       envs: settings?.envs ?? DEPLOY_ENVS,
     },
   };
+}
+
+/**
+ * Why no task may be written in this project, with the fix, or null when writes go on. A project
+ * file this kit cannot use stops every write up front, the same way for each task tool and for
+ * herdr, so a plan is never left half written (a plan made, then its file list refused). Reads
+ * still answer. Outside git there is no project file, so there is no gate.
+ */
+export function taskWriteRefusal(
+  read: ProjectConfigRead,
+  env: Env,
+): { why: string; fix: string } | null {
+  if (read.ok) return null;
+  const why = `Task writes are refused: ${read.why}`;
+  if (read.requiresFile === null) return { why, fix: "Fix that file; task reads still answer." };
+  // The session runs the kit it started with: an update since then is on disk, not loaded.
+  const installed = findUserInstall(cliPaths(env).installedPluginsFile)?.version ?? null;
+  if (installed !== null && installed !== VERSION && meetsRequires(read.requiresFile, installed))
+    return {
+      why,
+      fix: `The kit on disk (${installed}) already meets it: restart this session to load it.`,
+    };
+  return {
+    why,
+    fix:
+      installed === null
+        ? "If the kit on disk already meets it, restart this session to load it; after an update, restart it too."
+        : "After an update, restart this session to load it.",
+  };
+}
+
+/** True when kit `version` meets the file's `requires`: the check that runs first in the parse. */
+function meetsRequires(file: string, version: string): boolean {
+  try {
+    loadCcSmartDevKitConfig(file, version);
+    return true;
+  } catch (error) {
+    // A later check failing (a field this build does not know) means `requires` itself passed.
+    return !(error instanceof CcSmartDevKitVersionError);
+  }
 }
