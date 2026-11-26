@@ -7,19 +7,18 @@
  * in the project's main checkout. It is a small pull request:
  *
  *   1. the project and its `worktrees.base`;
- *   2. `git fetch origin <base>` and the base's own copy of the project's file — a file that is
- *      not committed there has nothing to propose into;
+ *   2. `git fetch origin <base>`, then **one** commit (`origin/<base>` as the fetch left it) and
+ *      the project's file in it, exactly as committed — a file that is not committed there has
+ *      nothing to propose into. Every later step reads this commit and this text only;
  *   3. the value **as the base commits it** (`resolveWorkflow` over that file, the same resolver
  *      `workflow show` reads; only a value the project's own file sets counts) — one the base
  *      already has, or an `--unset` of one it does not set, stops here with one line and no
  *      branch. This checkout's working copy is never the comparison: an uncommitted edit here is
  *      not a policy, and the person's own defaults are never put in a pull request;
  *   4. `gh` (installed, and able to read this repository) — no pull request, no branch;
- *   5. the base's file, its mode and the trees around it, all read from **one** commit
- *      (`origin/<base>` as the fetch left it), and the one value applied by **the same step
- *      `workflow set --project` writes with** (`editProjectSetting`: it validates the value,
- *      raises `requires`, and refuses a setting that is not the project's) — never a second
- *      writer;
+ *   5. the one value applied to that text by **the same step `workflow set --project` writes
+ *      with** (`editProjectSetting`: it validates the value, raises `requires`, and refuses a
+ *      setting that is not the project's) — never a second writer;
  *   6. the commit, made with git plumbing in the main checkout's own repository: the new text as
  *      a blob (`hash-object -w --stdin`, so no clean filter changes a byte), the `.claude` tree
  *      and the root tree with that one entry replaced (`mktree`), and `commit-tree` on the base
@@ -44,13 +43,8 @@
 import { COMMAND } from "../build-info/names";
 import type { CliPaths } from "../cli/paths";
 import { runGit, runGitRaw } from "../hooks/git";
-import {
-  type Checkout,
-  CONFIG_PATH,
-  loadProjectConfig,
-  locateCheckout,
-  readCommittedConfig,
-} from "../project/resolve";
+import { type CcSmartDevKitConfig, parseCcSmartDevKitConfig } from "../project/config";
+import { type Checkout, CONFIG_PATH, loadProjectConfig, locateCheckout } from "../project/resolve";
 import { worktreeBranch } from "../worktrees/paths";
 import { GH_TIMEOUT_MS, type GhRunner, ghMissing, spawnGh } from "./merge-check";
 import { type ResolvedWorkflow, resolvedValueOf, resolveWorkflow } from "./resolve";
@@ -225,7 +219,12 @@ function nameFree(repo: string, branch: string, env: Env, taken: ReadonlySet<str
   ).ok;
 }
 
-/** The first free branch name from `wanted` on: the same day's second change is `-2`, then `-3`. */
+/**
+ * The first free branch name from `wanted` on: the same day's second change is `-2`, then `-3`.
+ * The `worktree-` prefix stays though no worktree is made: proposals pushed before the
+ * plumbing commit carry it, so one prefix finds every proposal of a day and keeps the count
+ * going across both.
+ */
 function freeBranch(repo: string, wanted: string, env: Env): string {
   const first = worktreeBranch(wanted);
   const taken = remoteBranches(repo, first, env);
@@ -239,14 +238,17 @@ function freeBranch(repo: string, wanted: string, env: Env): string {
 
 /**
  * `origin/<base>`'s commit and the project file's text in it, exactly as committed (no trim, no
- * filter). A file that is not a plain file there — a symbolic link, a folder — is refused: the
- * commit could only replace the link, never change what it points to.
+ * filter); `text` null when that commit has no such file. Everything a run reads of the base —
+ * the value it changes, the text it edits, the parent and the trees of its commit — comes from
+ * this one commit, so a fetch in another process cannot mix two. A file that is not a plain
+ * file there — a symbolic link, a folder — is refused: the commit could only replace the link,
+ * never change what it points to.
  */
 function baseFile(
   repo: string,
   base: string,
   env: Env,
-): { sha: string; text: string } | { why: string } {
+): { sha: string; text: string | null } | { why: string } {
   const commit = runGit(
     repo,
     ["rev-parse", "--verify", "--quiet", `refs/remotes/origin/${base}^{commit}`],
@@ -261,6 +263,7 @@ function baseFile(
     QUICK_GIT_TIMEOUT_MS,
   );
   if (!entry.ok) return { why: lastLine(entry.err) };
+  if (entry.out === "") return { sha: commit.out, text: null };
   const blob = /^100(?:644|755) blob ([0-9a-f]+)\t/.exec(entry.out)?.[1];
   if (blob === undefined) return { why: "it is not a plain file there" };
   const text = runGitRaw(repo, ["cat-file", "blob", blob], env, QUICK_GIT_TIMEOUT_MS);
@@ -549,16 +552,20 @@ export async function proposeWorkflow(
       `git fetch origin ${base} failed: ${lastLine(fetched.err)}. Check the network and that origin has ${base}, then try again.`,
     );
   }
-  let committed: ReturnType<typeof readCommittedConfig>;
-  try {
-    committed = readCommittedConfig(checkout, base, { env: context.env });
-  } catch (error) {
-    return fail(reasonOf(error));
-  }
-  if (!committed.found) {
+  const where = `origin/${base}:${CONFIG_PATH}`;
+  const read = baseFile(repo, base, context.env);
+  if ("why" in read) return fail(`git could not read ${where}: ${read.why}.`);
+  if (read.text === null) {
     return fail(
       `origin/${base} has no ${CONFIG_PATH}: commit the project's file to ${base} and push it first — a change counts once it is merged.`,
     );
+  }
+  const { sha: baseSha, text: baseText } = read;
+  let committed: CcSmartDevKitConfig;
+  try {
+    committed = parseCcSmartDevKitConfig(baseText, where);
+  } catch (error) {
+    return fail(reasonOf(error));
   }
 
   // 3. The value **as the base commits it**, never this checkout's working copy: an uncommitted
@@ -567,7 +574,7 @@ export async function proposeWorkflow(
   //    the project's own file holds is ever a `from`: the person's defaults stay private.
   let resolved: ResolvedWorkflow;
   try {
-    resolved = resolveWorkflow(context.paths, committed.config);
+    resolved = resolveWorkflow(context.paths, committed);
   } catch (error) {
     return fail(reasonOf(error));
   }
@@ -598,17 +605,11 @@ export async function proposeWorkflow(
     );
   }
 
-  // 5. The base's file, read from one commit, and the one value applied to its text by the step
-  //    `workflow set --project` writes with.
-  const where = `origin/${base}:${CONFIG_PATH}`;
-  const read = baseFile(repo, base, context.env);
-  if ("why" in read) {
-    return fail(`git could not read ${where}: ${read.why}. Nothing was committed or pushed.`);
-  }
-  const baseSha = read.sha;
+  // 5. The one value, applied to the same commit's text by the step `workflow set --project`
+  //    writes with.
   let edit: ProjectEdit;
   try {
-    edit = editProjectSetting(read.text, where, key, value);
+    edit = editProjectSetting(baseText, where, key, value);
   } catch (error) {
     return fail(reasonOf(error));
   }
