@@ -724,7 +724,7 @@ import { dirname as dirname3, join as join8 } from "path";
 
 // src/build-info/index.ts
 var info = {
-  version: "6.6.0",
+  version: "6.7.0",
   repo: "sellanybiz/cc-smart-dev-kit",
   dependencies: [
     {
@@ -746,7 +746,7 @@ var PLUGIN_INSTALL_COMMAND = `claude plugin install ${PLUGIN_ID}`;
 var PLUGIN_UPDATE_COMMAND = `claude plugin update ${PLUGIN_ID}`;
 
 // src/hooks/checked-config.ts
-var PARSER_FINGERPRINT = "4823944e2b30c1e4a49af5e0fe9abc4b1b32e9d4d5e184fab4055002e51367ce";
+var PARSER_FINGERPRINT = "8d80e248e350839b3aa7d198f4e1bcf3cffd3d14511b535e61df6364bb4a0699";
 var CHECKED_DIR = "checked";
 var CHECKED_CACHE_LIMIT = 64;
 var CHECKED_FILE_MAX_BYTES = 256 * 1024;
@@ -7170,15 +7170,15 @@ var IGNORE_CASE = process.platform === "win32";
 // src/hooks/git.ts
 var GIT_TIMED_OUT2 = "timed out";
 var GUARD_GIT_TIMEOUT_MS = 5000;
-function runGit(cwd, args, env, timeoutMs = 15000, own = {}) {
-  return spawnGit(cwd, args, env, timeoutMs, own, true);
+function runGit(cwd, args, env, timeoutMs = 15000, own = {}, input) {
+  return spawnGit(cwd, args, env, timeoutMs, own, true, input);
 }
-function spawnGit(cwd, args, env, timeoutMs, own, trim) {
+function spawnGit(cwd, args, env, timeoutMs, own, trim, input) {
   try {
     const result = Bun.spawnSync(["git", ...args], {
       cwd,
       env: { ...gitEnv(env), ...own },
-      stdin: "ignore",
+      stdin: input === undefined ? "ignore" : new TextEncoder().encode(input),
       stdout: "pipe",
       stderr: "pipe",
       timeout: timeoutMs,
@@ -9224,8 +9224,12 @@ function headCommit(folder, env) {
 function said(why) {
   return { stderr: `cc-smart-dev-kit review-record: ${why}` };
 }
-function inSubagentWorktree(cwd) {
-  return subagentWorktreeByShape(cwd) !== null;
+function inOwnWorktree(cwd, agentId) {
+  const folder = subagentWorktreeByShape(cwd);
+  if (folder === null)
+    return false;
+  const name = folder.split(/[\\/]/).at(-1) ?? "";
+  return agentIdKey(name) === agentIdKey(agentId);
 }
 async function reviewRecord(context) {
   const { project, input, event, env, cwd, paths } = context;
@@ -9236,8 +9240,6 @@ async function reviewRecord(context) {
   if (agent === null)
     return SILENT;
   const agentId = stringField(input.agent_id);
-  if (inSubagentWorktree(cwd))
-    return SILENT;
   let resolved;
   try {
     resolved = resolveWorkflow(paths, config);
@@ -9250,24 +9252,30 @@ async function reviewRecord(context) {
   if (agentId === null)
     return SILENT;
   const repository = project.mainCheckout ?? project.root;
-  const commit = headCommit(cwd, env);
+  const isolated = inOwnWorktree(cwd, agentId);
+  const notRecorded = (why, next = "") => input.stop_hook_active === true ? SILENT : said(`${why}, so no review is recorded${next}`);
   try {
     if (event === "SubagentStart") {
+      if (isolated)
+        return SILENT;
+      const commit = headCommit(cwd, env);
       if (commit !== null) {
         await noteReviewStart(reviewStartsFile(paths.stateDir, repository), agentId, commit, Date.now(), headBranch(cwd, env));
       }
       return SILENT;
     }
     const start = await takeReviewStart(reviewStartsFile(paths.stateDir, repository), agentId);
+    if (isolated) {
+      return notRecorded("this review agent worked in its own worktree, a branch cut from the base rather than the commit under review", ": run the reviewer without isolation");
+    }
     const transcript = stringField(input.agent_transcript_path);
-    if (transcript === null || !isReviewRun(transcript))
-      return SILENT;
-    if (commit === null)
-      return SILENT;
+    if (transcript === null || !isReviewRun(transcript)) {
+      return notRecorded(`this run was not a review from start to end (its brief and every later prompt need the line "${REVIEW_MODE_MARKER}"), or its transcript cannot be read`);
+    }
+    if (headCommit(cwd, env) === null)
+      return notRecorded("the folder has no commit yet");
     if (start === null) {
-      if (input.stop_hook_active === true)
-        return SILENT;
-      return said("no start was seen for this review agent, so no review is recorded: run the review again");
+      return notRecorded("no start was seen for this review agent", ": run the review again");
     }
     await recordReview(reviewsFile(paths.stateDir, repository), start.head, agent, Date.now(), start.branch);
   } catch (error) {

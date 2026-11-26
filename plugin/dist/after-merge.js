@@ -439,7 +439,7 @@ var init_state = __esm(() => {
 });
 // src/build-info/index.ts
 var info = {
-  version: "6.6.0",
+  version: "6.7.0",
   repo: "sellanybiz/cc-smart-dev-kit",
   dependencies: [
     {
@@ -2252,15 +2252,15 @@ var init_path_compare = __esm(() => {
 });
 
 // src/hooks/git.ts
-function runGit(cwd, args, env, timeoutMs = 15000, own = {}) {
-  return spawnGit(cwd, args, env, timeoutMs, own, true);
+function runGit(cwd, args, env, timeoutMs = 15000, own = {}, input) {
+  return spawnGit(cwd, args, env, timeoutMs, own, true, input);
 }
-function spawnGit(cwd, args, env, timeoutMs, own, trim) {
+function spawnGit(cwd, args, env, timeoutMs, own, trim, input) {
   try {
     const result = Bun.spawnSync(["git", ...args], {
       cwd,
       env: { ...gitEnv(env), ...own },
-      stdin: "ignore",
+      stdin: input === undefined ? "ignore" : new TextEncoder().encode(input),
       stdout: "pipe",
       stderr: "pipe",
       timeout: timeoutMs,
@@ -8911,6 +8911,11 @@ var init_resolve2 = __esm(() => {
   };
 });
 
+// src/setup/installed-plugins.ts
+var init_installed_plugins = __esm(() => {
+  init_build_info();
+});
+
 // src/workflow/reviews.ts
 import { createHash as createHash2 } from "crypto";
 function repoKey(repo) {
@@ -8946,7 +8951,11 @@ function projectKey(repo) {
   return repoKey(repo);
 }
 var init_context = __esm(() => {
+  init_build_info();
+  init_paths2();
+  init_config();
   init_resolve();
+  init_installed_plugins();
   init_reviews();
   init_check();
   init_files();
@@ -10118,7 +10127,7 @@ import {
   unlinkSync as unlinkSync2
 } from "fs";
 import { dirname as dirname3, join as join7 } from "path";
-var PARSER_FINGERPRINT = "4823944e2b30c1e4a49af5e0fe9abc4b1b32e9d4d5e184fab4055002e51367ce";
+var PARSER_FINGERPRINT = "8d80e248e350839b3aa7d198f4e1bcf3cffd3d14511b535e61df6364bb4a0699";
 var CHECKED_DIR = "checked";
 var CHECKED_CACHE_LIMIT = 64;
 var CHECKED_FILE_MAX_BYTES = 256 * 1024;

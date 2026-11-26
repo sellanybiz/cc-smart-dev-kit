@@ -140,18 +140,18 @@ function gitEnv(base) {
 // src/hooks/git.ts
 var GIT_TIMED_OUT = "timed out";
 var GUARD_GIT_TIMEOUT_MS = 5000;
-function runGit(cwd, args, env, timeoutMs = 15000, own = {}) {
-  return spawnGit(cwd, args, env, timeoutMs, own, true);
+function runGit(cwd, args, env, timeoutMs = 15000, own = {}, input) {
+  return spawnGit(cwd, args, env, timeoutMs, own, true, input);
 }
 function runGitRaw(cwd, args, env, timeoutMs = 15000) {
   return spawnGit(cwd, args, env, timeoutMs, {}, false);
 }
-function spawnGit(cwd, args, env, timeoutMs, own, trim) {
+function spawnGit(cwd, args, env, timeoutMs, own, trim, input) {
   try {
     const result = Bun.spawnSync(["git", ...args], {
       cwd,
       env: { ...gitEnv(env), ...own },
-      stdin: "ignore",
+      stdin: input === undefined ? "ignore" : new TextEncoder().encode(input),
       stdout: "pipe",
       stderr: "pipe",
       timeout: timeoutMs,
@@ -6088,7 +6088,7 @@ function preprocess(fn, schema) {
 }
 // src/build-info/index.ts
 var info = {
-  version: "6.6.0",
+  version: "6.7.0",
   repo: "sellanybiz/cc-smart-dev-kit",
   dependencies: [
     {
@@ -9763,6 +9763,9 @@ function processIsGone(pid) {
     return error.code === "ESRCH";
   }
 }
+
+// src/project/generated.ts
+var MARKED_VALUES = new Set(["set", "true"]);
 
 // src/workflow/review-cover.ts
 function parseGitVersion(out) {
