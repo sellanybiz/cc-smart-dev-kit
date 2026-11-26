@@ -64,25 +64,35 @@ interface World {
   }>;
 }
 
+/** What `racingGit` does to a push; everything else is the real git. */
+type Race = "delete-lands" | "lands" | "taken" | "taken-twice";
+
 /**
- * A `git` that does something once, at the first push, and is the real git for everything else:
- * `taken` pushes origin/main under the name the push is about to create, as another proposal
- * would between the name check and the push; `lands` runs the push and then fails, as a push
- * ended after origin took the branch would.
+ * A `git` that does something to a push, and is the real git for everything else:
+ * - `taken` (at the first push) and `taken-twice` (at the first two) push origin/main under the
+ *   name the push is about to create, as another proposal would between the name check and the
+ *   push;
+ * - `lands` runs the first push and then exits 1, as a push whose ref landed and whose end failed;
+ * - `delete-lands` does the same to every delete (`:<ref>`).
  */
-function racingGit(real: string, bin: string, race: "lands" | "taken"): string {
-  const mark = join(bin, "raced");
-  // The push's last argument is `<sha>:refs/heads/<branch>`.
-  const act =
-    race === "taken"
-      ? `for last in "$@"; do :; done
-  "${real}" push -q origin "refs/remotes/origin/main:\${last#*:}" >/dev/null 2>&1`
-      : `"${real}" "$@"
-  exit 1`;
+function racingGit(real: string, bin: string, race: Race): string {
+  const first = join(bin, "raced-1");
+  const second = join(bin, "raced-2");
+  // The push's last argument is `<sha>:refs/heads/<branch>`, or `:refs/heads/<branch>` to delete.
+  const takeName = `"${real}" push -q origin "refs/remotes/origin/main:\${last#*:}" >/dev/null 2>&1`;
+  const acts: Record<Race, string> = {
+    "delete-lands": `case "$last" in :*) "${real}" "$@"; exit 1 ;; esac`,
+    lands: `if [ ! -e "${first}" ]; then touch "${first}"; "${real}" "$@"; exit 1; fi`,
+    taken: `if [ ! -e "${first}" ]; then touch "${first}"; ${takeName}; fi`,
+    "taken-twice": `if [ ! -e "${second}" ]; then
+    if [ -e "${first}" ]; then touch "${second}"; else touch "${first}"; fi
+    ${takeName}
+  fi`,
+  };
   return `#!/bin/sh
-if [ "$1" = "push" ] && [ ! -e "${mark}" ]; then
-  touch "${mark}"
-  ${act}
+for last in "$@"; do :; done
+if [ "$1" = "push" ]; then
+  ${acts[race]}
 fi
 exec "${real}" "$@"
 `;
@@ -105,7 +115,7 @@ function world(
   options: {
     file?: "committed" | "local";
     gh?: "create-fails" | "create-hangs" | "create-no-url" | "in" | "missing" | "out";
-    race?: "lands" | "taken";
+    race?: Race;
   } = {},
 ): World {
   const { origin, repo } = makeClone("app");
@@ -254,9 +264,13 @@ describe("workflow propose: one setting through a pull request", () => {
 It counts once this pull request is merged into main: merge-check reads the review gate from the file committed on the base, and a session's own checkout never counts.
 ${MADE_WITHOUT_HOOKS}`,
     ]);
-    // One commit on the base, the person's, with a message naming the setting and both values.
-    expect(git(w.origin, "log", "--format=%s%n%b", `main..${branch}`).trim()).toBe(
-      `workflow: allowCommit (unset) → true\n${MADE_WITHOUT_HOOKS}`,
+    // One commit on the base, the person's, with a message naming the setting and both values,
+    // and the run's own id last.
+    const message = git(w.origin, "log", "--format=%s%n%b", `main..${branch}`).trim();
+    expect(message).toStartWith(`workflow: allowCommit (unset) → true\n${MADE_WITHOUT_HOOKS}\n`);
+    expect(message.split("\n")).toHaveLength(4);
+    expect(message.split("\n")[3]).toMatch(
+      /^Proposal-Id: [0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$/,
     );
     expect(git(w.origin, "rev-parse", `${branch}^`)).toBe(git(w.origin, "rev-parse", "main"));
     expect(git(w.origin, "log", "-1", "--format=%an <%ae>", branch).trim()).toBe(
@@ -470,9 +484,9 @@ ${MADE_WITHOUT_HOOKS}`,
     ).toBe(".claude/cc-smart-dev-kit.json\n");
   });
 
-  test("another run that pushed this very commit a moment before: its branch is a taken name, never this run's", async () => {
+  test("two runs of one proposal in one second make two commits: the other run's branch is a taken name, never this run's", async () => {
     const w = world();
-    // The same identity, setting and second make the same commit, and so the same id.
+    // The same identity, setting and second: without the run's own id, the same commit.
     const sameSecond = {
       GIT_AUTHOR_DATE: "2026-10-23T09:00:00Z",
       GIT_COMMITTER_DATE: "2026-10-23T09:00:00Z",
@@ -500,8 +514,32 @@ exec "${realGit}" "$@"
     expect(run.errors).toEqual([]);
     expect(run.status).toBe(0);
     expect(run.lines[1]).toBe(`+ ${other}-2, cut from origin/main and pushed`);
-    expect(git(w.origin, "rev-parse", `${other}-2`)).toBe(theirs);
+    // This run's commit is its own; the other run's branch still holds the other commit.
+    expect(git(w.origin, "rev-parse", `${other}-2`)).not.toBe(theirs);
     expect(git(w.origin, "rev-parse", other)).toBe(theirs);
+  });
+
+  test("two names taken in a row while the run pushes: said as taken names, not as a push you may not make", async () => {
+    const w = world({ race: "taken-twice" });
+    const name = "worktree-workflow-allowCommit-20261023";
+    const run = await w.run(["propose", "allowCommit", "true"]);
+    expect(run.status).toBe(1);
+    expect(run.errors).toEqual([
+      `the branch names ${name} and ${name}-2 were both taken on origin while this proposal ran: other proposals of allowCommit are being pushed now. Nothing was pushed; run it again in a moment.`,
+    ]);
+  });
+
+  test("every name of the day taken: said with what to do, and nothing pushed", async () => {
+    const w = world();
+    const name = "worktree-workflow-allowCommit-20261023";
+    git(w.repo, "branch", name);
+    for (let count = 2; count <= 50; count += 1) git(w.repo, "branch", `${name}-${count}`);
+    const run = await w.run(["propose", "allowCommit", "true"]);
+    expect(run.status).toBe(1);
+    expect(run.errors).toEqual([
+      `all 50 branch names for allowCommit today (${name} to ${name}-50) are taken, here or on origin: delete the proposal branches you no longer need, then run it again. Nothing was pushed.`,
+    ]);
+    expect(branchesIn(w.origin, "worktree-workflow-*")).toEqual([]);
   });
 
   test("the git calls a run makes, in order: the worst case counts each one", async () => {
@@ -535,10 +573,10 @@ exec "${realGit}" "$@"
       "push",
     ]);
     // From the limits, by hand: two checkout reads of 5 s; the fetch 60 s; gh 10 s; the commit
-    // 120 s; two name picks and pushes of 60 + 120 s; gh pr create 60 s; the take-back's 60 + 120 s;
-    // twelve quick calls of 10 s (the eleven above, and the second pick's branch list); 30 s.
+    // 120 s; two name picks and pushes of 60 + 120 s; gh pr create 60 s; the take-back's delete
+    // 120 s; twelve quick calls of 10 s (the eleven above, and the second pick's branch list); 30 s.
     expect(PROPOSE_WORST_CASE_MS).toBe(
-      10_000 + 60_000 + 10_000 + 120_000 + 360_000 + 60_000 + 180_000 + 120_000 + 30_000,
+      10_000 + 60_000 + 10_000 + 120_000 + 360_000 + 60_000 + 120_000 + 120_000 + 30_000,
     );
   });
 
@@ -682,7 +720,7 @@ exec "${realGit}" "$@"
     expect(branchesIn(w.origin, "worktree-workflow-*")).toEqual([]);
   });
 
-  test("a push the remote refuses: refused in git's words, and origin asked before nothing is said left", async () => {
+  test("a push the remote refuses: refused in git's words, and the leased delete says nothing was left", async () => {
     const w = world();
     mkdirSync(join(w.origin, "hooks"), { recursive: true });
     writeFileSync(
@@ -699,15 +737,37 @@ exec "${realGit}" "$@"
     expect(branchesIn(w.origin, "worktree-workflow-*")).toEqual([]);
   });
 
-  test("a push that landed and then failed: the branch is found on origin and deleted again", async () => {
+  test("a push that landed and then exited non-zero: its porcelain line says it landed, and the pull request opens", async () => {
     const w = world({ race: "lands" });
     const run = await w.run(["propose", "allowCommit", "true"]);
+    expect(run.errors).toEqual([]);
+    expect(run.status).toBe(0);
+    expect(branchesIn(w.origin, "worktree-workflow-*")).toEqual([
+      "worktree-workflow-allowCommit-20261023",
+    ]);
+  });
+
+  test("a take-back whose delete landed and then exited non-zero: said as deleted", async () => {
+    const w = world({ gh: "create-fails", race: "delete-lands" });
+    const run = await w.run(["propose", "allowCommit", "true"]);
     expect(run.status).toBe(1);
-    expect(run.errors).toHaveLength(1);
     expect(run.errors[0]).toEndWith(
       "; the pushed branch was deleted from origin again; nothing was left behind",
     );
     expect(branchesIn(w.origin, "worktree-workflow-*")).toEqual([]);
+  });
+
+  test("a push URL apart from the fetch URL: the take-back deletes where the push went", async () => {
+    const w = world({ gh: "create-fails" });
+    const pushTo = join(tempDir("propose-push-url"), "push.git");
+    git(dirname(pushTo), "init", "-q", "--bare", pushTo);
+    git(w.repo, "config", "remote.origin.pushurl", pushTo);
+    const run = await w.run(["propose", "allowCommit", "true"]);
+    expect(run.status).toBe(1);
+    expect(run.errors[0]).toEndWith(
+      "; the pushed branch was deleted from origin again; nothing was left behind",
+    );
+    expect(branchesIn(pushTo, "worktree-workflow-*")).toEqual([]);
   });
 
   test("a base that cannot be fetched: refused with the fix, and nothing made", async () => {

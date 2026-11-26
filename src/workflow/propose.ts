@@ -34,11 +34,11 @@
  *
  * **Nothing is left half-made.** A step that fails after the push removes the branch from origin
  * again — only while it still holds this run's commit — and the one line says what is left if
- * that fails. A push that failed or was ended is asked about on origin before the line says
- * nothing is left. Two exceptions, both to avoid destroying what may be someone else's: a
- * `gh pr create` that does not answer in time leaves the pushed branch (the pull request may
- * exist), and a name another proposal took between the check and the push is skipped for the
- * next free one, never reused.
+ * that fails. A push that failed or was ended may still have landed, so it is taken back the
+ * same way, and the delete's own answer says whether anything was there. Two exceptions, both to
+ * avoid destroying what may be someone else's: a `gh pr create` that does not answer in time
+ * leaves the pushed branch (the pull request may exist), and a name another proposal took
+ * between the check and the push is skipped for the next free one, never reused.
  */
 import { COMMAND } from "../build-info/names";
 import type { CliPaths } from "../cli/paths";
@@ -89,10 +89,10 @@ const QUICK_GIT_CALLS = 1 + 3 + 1 + 2 * TREE_LEVELS + 1 + 2;
  * The longest a run can take, from its own step limits, in the order the run meets them: finding
  * the checkout (`rev-parse`, and `worktree list` from a worktree), the fetch, the `gh` read, the
  * commit, then up to two name picks and pushes (an `ls-remote` and a push each, when a name is
- * taken once), `gh pr create`, the take-back (an `ls-remote` and the remote branch's deletion),
- * every quick local call, and the process's own start. A caller that runs the command in a child
- * gives it **at least this**, so the command's own limits always fire — and its take-back always
- * runs — before the child is ended from outside (the portal's action, `src/portal/actions.ts`).
+ * taken once), `gh pr create`, the take-back (the remote branch's leased deletion), every quick
+ * local call, and the process's own start. A caller that runs the command in a child gives it
+ * **at least this**, so the command's own limits always fire — and its take-back always runs —
+ * before the child is ended from outside (the portal's action, `src/portal/actions.ts`).
  */
 export const PROPOSE_WORST_CASE_MS =
   2 * RESOLVE_GIT_TIMEOUT_MS +
@@ -101,7 +101,6 @@ export const PROPOSE_WORST_CASE_MS =
   COMMIT_TIMEOUT_MS +
   2 * (FETCH_TIMEOUT_MS + PUSH_TIMEOUT_MS) +
   GH_CREATE_TIMEOUT_MS +
-  FETCH_TIMEOUT_MS +
   PUSH_TIMEOUT_MS +
   QUICK_GIT_CALLS * QUICK_GIT_TIMEOUT_MS +
   30_000;
@@ -242,20 +241,28 @@ function localBranches(repo: string, prefix: string, env: Env): string[] {
 
 /**
  * The first free branch name from `wanted` on: the same day's second change is `-2`, then `-3`.
- * A name is taken when origin or this repository has it, each asked once. The `worktree-` prefix
- * stays though no worktree is made: proposals pushed before the plumbing commit carry it, so one
- * prefix finds every proposal of a day and keeps the count going across both.
+ * A name is taken when origin or this repository has it, each asked once, or when it is in
+ * `refused` (a name the push was refused under, which the listing may not show: it reads the
+ * fetch side, and a listing that cannot answer shows none). Null when all `NAME_TRIES` are taken.
+ * The `worktree-` prefix stays though no worktree is made: proposals pushed before the plumbing
+ * commit carry it, so one prefix finds every proposal of a day and keeps the count going across
+ * both.
  */
-function freeBranch(repo: string, wanted: string, env: Env): string {
+function freeBranch(
+  repo: string,
+  wanted: string,
+  env: Env,
+  refused: ReadonlySet<string> = new Set(),
+): string | null {
   const first = worktreeBranch(wanted);
   const taken = remoteBranches(repo, first, env);
-  for (const name of localBranches(repo, first, env)) taken.add(name);
+  for (const name of [...localBranches(repo, first, env), ...refused]) taken.add(name);
   if (!taken.has(first)) return first;
   for (let count = 2; count <= NAME_TRIES; count += 1) {
     const branch = worktreeBranch(`${wanted}-${count}`);
     if (!taken.has(branch)) return branch;
   }
-  return first;
+  return null;
 }
 
 /** The bytes a tree entry's name is matched by: names are bytes, and a path's part is UTF-8. */
@@ -339,6 +346,23 @@ function treeWith(
     : { why: `git mktree failed: ${lastLine(made.err)}` };
 }
 
+/**
+ * What `git push --porcelain` said of `ref`: its flag (`*` new, `-` deleted, `!` refused, …) and
+ * its summary (`[rejected] (stale info)`); null when it printed no line for it (git stopped
+ * first). The line, not the exit code, says what happened to the ref: a push can land and still
+ * exit non-zero, when something after the ref update fails.
+ */
+function pushedRef(out: string, ref: string): { flag: string; summary: string } | null {
+  for (const line of out.split("\n")) {
+    const [flag = "", refs, summary = ""] = line.split("\t");
+    if (refs?.endsWith(`:${ref}`)) return { flag, summary };
+  }
+  return null;
+}
+
+/** The lease refused the update: origin's ref is not what the lease expected. */
+const LEASE_REFUSED = "(stale info)";
+
 /** What the push answered: the branch is origin's now, the name was taken, or it failed. */
 type Pushed = { ok: true } | { ok: false; taken: boolean; why: string };
 
@@ -347,10 +371,8 @@ type Pushed = { ok: true } | { ok: false; taken: boolean; why: string };
  * hook needs what a session may not have, and the review and CI are this commit's gate. The
  * empty lease (`refs/heads/<branch>:` with no value) lets the push create the branch only: a name
  * that exists on origin is refused (`[rejected] (stale info)` in the porcelain line), never
- * overwritten. A name that already holds this very commit — another run of the same proposal in
- * the same second makes the same commit — is `=` (`[up to date]`), with exit 0: that branch is
- * the other run's, so it is a taken name too, never this run's push. In English (`LC_ALL=C`), so
- * the line reads the same in any locale.
+ * overwritten. Each run's commit is its own (`Proposal-Id`), so a lease only ever matches this
+ * run's push. In English (`LC_ALL=C`), so the line reads the same in any locale.
  */
 function pushBranch(repo: string, sha: string, branch: string, env: Env): Pushed {
   const ref = `refs/heads/${branch}`;
@@ -361,12 +383,12 @@ function pushBranch(repo: string, sha: string, branch: string, env: Env): Pushed
     PUSH_TIMEOUT_MS,
     { LC_ALL: "C" },
   );
-  const line = pushed.out.split("\n").find((one) => one.split("\t")[1] === `${sha}:${ref}`);
-  const taken = { ok: false, taken: true, why: `${branch} is already on origin` } as const;
-  if (line?.startsWith("=\t")) return taken;
-  if (pushed.ok) return { ok: true };
-  if (line?.startsWith("!\t") && line.includes("(stale info)")) return taken;
-  return { ok: false, taken: false, why: line?.split("\t")[2] ?? lastLine(pushed.err) };
+  const line = pushedRef(pushed.out, ref);
+  if (line?.flag === "*") return { ok: true };
+  if (line?.flag === "!" && line.summary.includes(LEASE_REFUSED)) {
+    return { ok: false, taken: true, why: `${branch} is already on origin` };
+  }
+  return { ok: false, taken: false, why: line?.summary ?? lastLine(pushed.err) };
 }
 
 /** What a take-back left: what is still there, and whether it deleted a pushed branch. */
@@ -376,32 +398,31 @@ interface TakenBack {
 }
 
 /**
- * Removes this run's branch from origin, **only while it holds this run's commit**: a push that
- * failed or was ended may still have landed, so origin is asked first (`ls-remote`), and the
- * delete leases the branch at `sha` — a branch another run pushed under the name is never
- * deleted. `--no-verify` for the same reason as the push.
+ * Removes this run's branch from origin, **only while it holds this run's commit**: the delete
+ * leases the branch at `sha`, so a branch another run pushed under the name is never deleted. It
+ * goes where the push went (a separate `pushurl` included), and a push that failed or was ended
+ * may still have landed, so the delete is always sent and its porcelain line says what was there:
+ * `-` deleted; refused at the lease, so origin never held this run's commit there; anything else
+ * may have left it. `--no-verify` for the same reason as the push.
  */
 function takeBack(repo: string, branch: string, sha: string, env: Env): TakenBack {
   const ref = `refs/heads/${branch}`;
-  const listed = runGit(repo, ["ls-remote", "origin", ref], env, FETCH_TIMEOUT_MS);
-  if (!listed.ok) {
-    return {
-      deleted: false,
-      left: [`maybe the branch ${branch} on origin (git could not ask: ${lastLine(listed.err)})`],
-    };
-  }
-  if (!listed.out.split("\n").some((line) => line.startsWith(`${sha}\t`))) {
-    return { deleted: false, left: [] };
-  }
   const gone = runGit(
     repo,
-    ["push", "--no-verify", `--force-with-lease=${ref}:${sha}`, "origin", `:${ref}`],
+    ["push", "--no-verify", "--porcelain", `--force-with-lease=${ref}:${sha}`, "origin", `:${ref}`],
     env,
     PUSH_TIMEOUT_MS,
+    { LC_ALL: "C" },
   );
-  return gone.ok
-    ? { deleted: true, left: [] }
-    : { deleted: false, left: [`the branch ${branch} on origin (${lastLine(gone.err)})`] };
+  const line = pushedRef(gone.out, ref);
+  if (line?.flag === "-") return { deleted: true, left: [] };
+  if (line?.flag === "!" && line.summary.includes(LEASE_REFUSED)) {
+    return { deleted: false, left: [] };
+  }
+  return {
+    deleted: false,
+    left: [`maybe the branch ${branch} on origin (${line?.summary ?? lastLine(gone.err)})`],
+  };
 }
 
 /** The end of a failure's line: what was taken back, or what is left. */
@@ -678,6 +699,10 @@ export async function proposeWorkflow(
       title,
       "-m",
       MADE_WITHOUT_HOOKS,
+      // This run's own id, so two runs of one proposal in one second never make one commit: a
+      // lease at this run's commit then matches only this run's push.
+      "-m",
+      `Proposal-Id: ${crypto.randomUUID()}`,
     ],
     context.env,
     COMMIT_TIMEOUT_MS,
@@ -691,19 +716,25 @@ export async function proposeWorkflow(
 
   // 7. The push to a new branch, then the pull request.
   const wanted = `workflow-${settingSlug(key)}-${dayStamp(now())}`;
+  const allTaken = `all ${NAME_TRIES} branch names for ${key} today (${worktreeBranch(wanted)} to ${worktreeBranch(`${wanted}-${NAME_TRIES}`)}) are taken, here or on origin: delete the proposal branches you no longer need, then run it again. Nothing was pushed.`;
   let branch = freeBranch(repo, wanted, context.env);
+  if (branch === null) return fail(allTaken);
   let pushed = pushBranch(repo, sha, branch, context.env);
   if (!pushed.ok && pushed.taken) {
     // A name another proposal pushed between the check and the push: one more free name, once.
-    branch = freeBranch(repo, wanted, context.env);
+    const refused = branch;
+    branch = freeBranch(repo, wanted, context.env, new Set([refused]));
+    if (branch === null) return fail(allTaken);
     pushed = pushBranch(repo, sha, branch, context.env);
+    if (!pushed.ok && pushed.taken) {
+      return fail(
+        `the branch names ${refused} and ${branch} were both taken on origin while this proposal ran: other proposals of ${key} are being pushed now. Nothing was pushed; run it again in a moment.`,
+      );
+    }
   }
   if (!pushed.ok) {
-    const tail = pushed.taken
-      ? "; nothing was left behind"
-      : tailOf(takeBack(repo, branch, sha, context.env));
     return fail(
-      `git push origin ${branch} failed: ${pushed.why}. Check that you may push to this repository, then try again${tail}`,
+      `git push origin ${branch} failed: ${pushed.why}. Check that you may push to this repository, then try again${tailOf(takeBack(repo, branch, sha, context.env))}`,
     );
   }
   const created = await createPullRequest(
