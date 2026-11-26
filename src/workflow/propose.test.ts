@@ -443,6 +443,43 @@ ${MADE_WITHOUT_HOOKS}`,
     expect(branchesIn(w.origin, "worktree-workflow-*")).toEqual([]);
   });
 
+  test("a fetch that moves origin/main mid-run: the title's old value and the commit's parent come from the one commit read first", async () => {
+    const w = world();
+    const first = git(w.repo, "rev-parse", "origin/main").trim();
+    // A commit with allowCommit false, made here and never pushed: where another process's fetch
+    // could move origin/main to while this run reads it.
+    writeClaudeFile(w.repo, "cc-smart-dev-kit.json", {
+      ...SETTINGS,
+      workflow: { allowCommit: false },
+    });
+    git(w.repo, "commit", "-q", "-am", "allowCommit off");
+    const moved = git(w.repo, "rev-parse", "HEAD").trim();
+    const realGit = Bun.which("git") ?? "/usr/bin/git";
+    const mark = join(w.bin, "moved");
+    rmSync(join(w.bin, "git"));
+    // At the first `cat-file`, origin/main moves: after a run has picked its one commit.
+    writeFileSync(
+      join(w.bin, "git"),
+      `#!/bin/sh
+if [ "$1" = "cat-file" ] && [ ! -e "${mark}" ]; then
+  touch "${mark}"
+  "${realGit}" update-ref refs/remotes/origin/main ${moved}
+fi
+exec "${realGit}" "$@"
+`,
+    );
+    chmodSync(join(w.bin, "git"), 0o755);
+
+    const run = await w.run(["propose", "allowCommit", "true"]);
+    const branch = "worktree-workflow-allowCommit-20261023";
+    expect(run.errors).toEqual([]);
+    expect(run.status).toBe(0);
+    expect(git(w.origin, "rev-parse", `${branch}^`).trim()).toBe(first);
+    expect(git(w.origin, "log", "-1", "--format=%s", branch).trim()).toBe(
+      "workflow: allowCommit (unset) → true",
+    );
+  });
+
   test("the person's own defaults never reach the pull request: a from is the project's value, or unset", async () => {
     const w = world();
     writePersonalWorkflow(w.env, { allowCommit: true });
