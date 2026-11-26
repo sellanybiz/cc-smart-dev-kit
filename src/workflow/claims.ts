@@ -17,6 +17,7 @@
 import { cappedHookList } from "../hooks/capped-list";
 import { type GitRun, runGitRaw } from "../hooks/git";
 import type { Env } from "../hooks/run";
+import { GENERATED_ATTRIBUTE } from "../project/generated";
 
 /**
  * The phrases that make a sentence a claim, lower case (`git grep -i` finds them in any case).
@@ -88,8 +89,8 @@ const SKIPPED_PATHS: readonly string[] = [
  * count leaves out too (`review-cover.ts`), read here as git's attribute pathspec.
  */
 const GENERATED_PATHS: readonly string[] = [
-  ":(exclude,attr:linguist-generated)",
-  ":(exclude,attr:linguist-generated=true)",
+  `:(exclude,attr:${GENERATED_ATTRIBUTE})`,
+  `:(exclude,attr:${GENERATED_ATTRIBUTE}=true)`,
 ];
 
 /**

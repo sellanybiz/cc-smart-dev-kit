@@ -6,13 +6,15 @@
 import { describe, expect, test } from "bun:test";
 import { mkdirSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { GIT_TIMED_OUT, runGitAsync } from "../hooks/git";
 import { type Checkout, locateCheckout } from "../project/resolve";
 import { makeClone } from "../testing/hooks";
-import { cleanGitEnv, git, withGitVersion } from "../testing/temp";
+import { cleanGitEnv, git, tempDir, withGitVersion } from "../testing/temp";
 import {
   allowanceOf,
   type ChangeCount,
   type Cover,
+  type CoverGit,
   type CoverTarget,
   coverRefusal,
   type FixLimits,
@@ -396,7 +398,7 @@ describe("D17: which reviews are candidates", () => {
       expect(await cover(w, [record(R, ["other"])])).toEqual({
         covered: false,
         review: null,
-        why: `no review is recorded for ${short(H)} or for an earlier commit of feat`,
+        why: `no review is recorded for ${short(H)}, for an earlier commit of feat, or on a local branch that holds ${short(H)}`,
       });
     },
     SLOW,
@@ -412,7 +414,132 @@ describe("D17: which reviews are candidates", () => {
       expect(await cover(w, [record(R)], { branch: "feat2" })).toEqual({
         covered: false,
         review: null,
-        why: `no review is recorded for ${short(H)} or for an earlier commit of feat2`,
+        why: `no review is recorded for ${short(H)}, for an earlier commit of feat2, or on a local branch that holds ${short(H)}`,
+      });
+    },
+    SLOW,
+  );
+
+  test(
+    "#934: a review on a builder's branch covers the PR pushed from it under another name",
+    async () => {
+      const w = world();
+      git(w.repo, "checkout", "-q", "-b", "worktree-agent-x");
+      const R = commit(
+        w.repo,
+        { "src/a.txt": numbered(60, "a"), "src/b.txt": numbered(40, "b") },
+        "reviewed",
+      );
+      const H = commit(w.repo, { "src/a.txt": numbered(70, "a") }, "fix");
+      git(w.repo, "branch", "fix/y");
+      // The builder goes on after the push: its branch still holds the PR's head.
+      commit(w.repo, { "src/later.txt": "later\n" }, "later");
+      // A tag of the same name makes git's short name `heads/worktree-agent-x`: never read that way.
+      git(w.repo, "tag", "worktree-agent-x", R);
+      const builder = [record(R, ["worktree-agent-x"])];
+      expect(await cover(w, builder, { head: H, branch: "fix/y" })).toEqual({
+        covered: true,
+        review: R,
+        delta: count(10, 1),
+        reviewed: REVIEWED,
+      });
+      // Within the limits only: a fix over them is measured, and refused.
+      git(w.repo, "checkout", "-q", "fix/y");
+      const big = commit(w.repo, { "src/c.txt": numbered(250, "c") }, "big fix");
+      git(w.repo, "branch", "-f", "worktree-agent-x", big);
+      expect(await cover(w, builder, { head: big, branch: "fix/y" })).toEqual({
+        covered: false,
+        delta: count(260, 2),
+        review: R,
+        reviewed: REVIEWED,
+        why: `260 lines in 2 files changed after the review of ${short(R)}, over the limit of 200 lines and 10 files (fixesAfterReview: 200 lines, 10 files, or 20% of the reviewed 100 lines in 2 files)`,
+      });
+    },
+    SLOW,
+  );
+
+  test(
+    "#934: a review on a branch whose tip does not hold the head is no candidate, and the reason says what was looked for",
+    async () => {
+      const w = world();
+      git(w.repo, "checkout", "-q", "-b", "worktree-agent-x");
+      const R = commit(w.repo, { "src/a.txt": numbered(60, "a") }, "reviewed");
+      git(w.repo, "checkout", "-q", "-b", "fix/y", "origin/main");
+      const H = commit(w.repo, { "src/a.txt": numbered(61, "a") }, "unrelated");
+      expect(await cover(w, [record(R, ["worktree-agent-x"])], { branch: "fix/y" })).toEqual({
+        covered: false,
+        review: null,
+        why: `no review is recorded for ${short(H)}, for an earlier commit of fix/y, or on a local branch that holds ${short(H)}`,
+      });
+    },
+    SLOW,
+  );
+
+  test(
+    "#934: a squash-merged parent's review does not cover the PR stacked on it",
+    async () => {
+      // The child still sits on the old base, so the parent's change replays as new work: only
+      // the branch's tip, which never holds the child's head, keeps the parent's review out.
+      const w = world();
+      const R = reviewed(w.repo);
+      git(w.repo, "checkout", "-q", "-b", "child");
+      const H = commit(w.repo, { "src/child.txt": "child\n" }, "child");
+      git(w.repo, "checkout", "-q", "main");
+      git(w.repo, "merge", "-q", "--squash", "feat");
+      git(w.repo, "commit", "-q", "-m", "squashed");
+      git(w.repo, "push", "-q", "origin", "main");
+      git(w.repo, "checkout", "-q", "child");
+      expect(await cover(w, [record(R)], { branch: "child" })).toEqual({
+        covered: false,
+        review: null,
+        why: `no review is recorded for ${short(H)}, for an earlier commit of child, or on a local branch that holds ${short(H)}`,
+      });
+    },
+    SLOW,
+  );
+
+  test(
+    "#934: a reviewed branch merged into the PR's branch is no candidate",
+    async () => {
+      const w = world();
+      git(w.repo, "checkout", "-q", "-b", "other");
+      const R = commit(w.repo, { "src/other.txt": numbered(60, "o") }, "reviewed elsewhere");
+      git(w.repo, "checkout", "-q", "-b", "feat", "origin/main");
+      commit(w.repo, { "src/a.txt": numbered(5, "a") }, "own");
+      git(w.repo, "merge", "-q", "--no-edit", "other");
+      const H = head(w.repo);
+      expect(await cover(w, [record(R, ["other"])])).toEqual({
+        covered: false,
+        review: null,
+        why: `no review is recorded for ${short(H)}, for an earlier commit of feat, or on a local branch that holds ${short(H)}`,
+      });
+    },
+    SLOW,
+  );
+
+  test(
+    "#934: a covering review stands when the time runs out on an older one; the newest is measured first",
+    async () => {
+      const w = world();
+      const R1 = reviewed(w.repo);
+      const R2 = commit(w.repo, { "src/c.txt": numbered(50, "c") }, "first fix");
+      commit(w.repo, { "src/d.txt": numbered(5, "d") }, "second fix");
+      const older = { sha: R1, at: "2026-10-21T09:00:00.000Z", branches: ["feat"] };
+      const newer = { sha: R2, at: "2026-10-21T10:00:00.000Z", branches: ["feat"] };
+      // Every git call about the older review times out.
+      const run: CoverGit["run"] = async (cwd, args, env, timeoutMs, own) =>
+        args.some((arg) => arg.startsWith(R1))
+          ? { ok: false, out: "", err: GIT_TIMED_OUT, code: null }
+          : await runGitAsync(cwd, args, env, timeoutMs, own);
+      const target = { head: head(w.repo), branch: "feat", base: "main" };
+      expect(
+        await readCover(w.checkout, target, [older, newer], LIMITS, { env: w.env, run }),
+      ).toEqual({ covered: true, review: R2, delta: count(5, 1), reviewed: count(150, 3) });
+      // With no covering review measured yet, running out of time is the answer.
+      expect(await readCover(w.checkout, target, [older], LIMITS, { env: w.env, run })).toEqual({
+        covered: false,
+        review: null,
+        why: "the time to measure the change after the review ran out",
       });
     },
     SLOW,
@@ -505,6 +632,53 @@ describe("D17: what is listed, not counted, and what is never covered", () => {
     },
     SLOW,
   );
+
+  // A checkout's own attribute files are not the base: a session could write one with no commit.
+  for (const [name, mark] of [
+    [
+      "the repository's info/attributes",
+      (w: World) => {
+        writeFileSync(join(w.repo, ".git", "info", "attributes"), "* linguist-generated\n");
+        return w.env;
+      },
+    ],
+    [
+      "a core.attributesFile",
+      (w: World) => {
+        const file = join(tempDir("attributes"), "attributes");
+        writeFileSync(file, "* linguist-generated=true\n");
+        git(w.repo, "config", "core.attributesFile", file);
+        return w.env;
+      },
+    ],
+    [
+      "the person's own attributes file ($XDG_CONFIG_HOME/git/attributes)",
+      (w: World) => {
+        const config = tempDir("xdg");
+        mkdirSync(join(config, "git"));
+        writeFileSync(join(config, "git", "attributes"), "* linguist-generated\n");
+        return { ...w.env, XDG_CONFIG_HOME: config };
+      },
+    ],
+  ] as const) {
+    test(
+      `security: a mark in ${name} hides nothing: a 500-line fix is not covered`,
+      async () => {
+        const w = world();
+        const R = reviewed(w.repo);
+        commit(w.repo, { "big.js": numbered(500, "big") });
+        const env = mark(w);
+        expect(await cover(w, [record(R)], {}, LIMITS, env)).toEqual({
+          covered: false,
+          delta: count(500, 1),
+          review: R,
+          reviewed: REVIEWED,
+          why: `500 lines in 1 file changed after the review of ${short(R)}, over the limit of 200 lines and 10 files (fixesAfterReview: 200 lines, 10 files, or 20% of the reviewed 100 lines in 2 files)`,
+        });
+      },
+      SLOW,
+    );
+  }
 
   test(
     "D17: a binary file changed after the review: not covered",

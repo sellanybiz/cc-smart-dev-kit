@@ -883,21 +883,80 @@ describe("the commit it records is the one the reviewer read (HK-6)", () => {
   });
 });
 
+/** A builder's agent id: another agent than the reviewer (`AGENT_ID`). */
+const BUILDER_ID = "f0e1d2c3b4a596870";
+
+/** What the stop says when the reviewer worked in its own isolated worktree. */
+const OWN_WORKTREE_LINE =
+  "cc-smart-dev-kit review-record: this review agent worked in its own worktree, a branch cut from the base rather than the commit under review, so no review is recorded: run the reviewer without isolation";
+
+/** What the stop says when the run was not a review from start to end. */
+const NOT_A_REVIEW_LINE =
+  'cc-smart-dev-kit review-record: this run was not a review from start to end (its brief and every later prompt need the line "Mode: review"), or its transcript cannot be read, so no review is recorded';
+
+describe("a session in a builder's worktree", () => {
+  test("#934: the session's folder is a builder's worktree: the reviewer records its commit, on its branch", async () => {
+    // The worktree has the shape of a subagent's, but it is another agent's: the session stands
+    // in it, so the reviewer reads the commit it is on.
+    const env = hookEnv();
+    const repo = makeRepo();
+    writeClaudeFile(repo, "cc-smart-dev-kit.json", CONFIG);
+    const folder = join(repo, ".claude", "worktrees", `agent-${BUILDER_ID}`);
+    git(repo, "worktree", "add", "-q", "-b", `worktree-agent-${BUILDER_ID}`, folder);
+    const head = commitAgain(folder);
+    expect(await review(env, folder, { agent_type: REVIEWER })).toEqual([{}, {}]);
+    expect(recorded(env, repo)).toEqual({ [head]: [REVIEWER] });
+    expect(branchesOf(env, repo)).toEqual({ [head]: [`worktree-agent-${BUILDER_ID}`] });
+  });
+
+  test("#934: a reviewer's own worktree nested in a builder's is still its own: nothing recorded, one line says why", async () => {
+    // The innermost `agent-<hex>` is the folder the reviewer works in.
+    const env = hookEnv();
+    const repo = makeRepo();
+    writeClaudeFile(repo, "cc-smart-dev-kit.json", CONFIG);
+    const builder = join(repo, ".claude", "worktrees", `agent-${BUILDER_ID}`);
+    git(repo, "worktree", "add", "-q", "-b", `worktree-agent-${BUILDER_ID}`, builder);
+    const own = join(builder, ".claude", "worktrees", `agent-${AGENT_ID}`);
+    git(repo, "worktree", "add", "-q", "-b", `worktree-agent-${AGENT_ID}`, own);
+    expect(await review(env, own, { agent_type: REVIEWER })).toEqual([
+      {},
+      { stderr: OWN_WORKTREE_LINE },
+    ]);
+    expect(recorded(env, repo)).toEqual({});
+  });
+});
+
 describe("what it never records", () => {
-  test("an agent that stopped inside its own worktree: not the commit under review", async () => {
+  test("an agent that stopped inside its own worktree: not the commit under review, and one line says why", async () => {
     const env = hookEnv();
     const repo = makeRepo();
     writeClaudeFile(repo, "cc-smart-dev-kit.json", CONFIG);
     const folder = join(repo, ".claude", "worktrees", `agent-${AGENT_ID}`);
     git(repo, "worktree", "add", "-q", "-b", `worktree-agent-${AGENT_ID}`, folder);
+    mkdirSync(join(folder, "src"));
     await runHook(reviewRecordHook, started(repo, { agent_type: REVIEWER }), env);
     expect(
       await runHook(reviewRecordHook, stopped(join(folder, "src"), { agent_type: REVIEWER }), env),
-    ).toEqual({});
+    ).toEqual({ stderr: OWN_WORKTREE_LINE });
     expect(recorded(env, repo)).toEqual({});
+    // The stop still takes its start: a stop is the end of that start.
+    expect(JSON.parse(readFileSync(recordFile(env, repo, ".starts.json"), "utf8"))).toEqual({});
   });
 
-  test("the same, with no agent id to match: the shape alone is enough", async () => {
+  test("an agent that started inside its own worktree notes no start", async () => {
+    const env = hookEnv();
+    const repo = makeRepo();
+    writeClaudeFile(repo, "cc-smart-dev-kit.json", CONFIG);
+    const folder = join(repo, ".claude", "worktrees", `agent-${AGENT_ID}`);
+    git(repo, "worktree", "add", "-q", "-b", `worktree-agent-${AGENT_ID}`, folder);
+    expect(await review(env, folder, { agent_type: REVIEWER })).toEqual([
+      {},
+      { stderr: OWN_WORKTREE_LINE },
+    ]);
+    expect(existsSync(recordFile(env, repo, ".starts.json"))).toBe(false);
+  });
+
+  test("no agent id in a subagent's worktree: nothing recorded", async () => {
     const env = hookEnv();
     const repo = makeRepo();
     writeClaudeFile(repo, "cc-smart-dev-kit.json", CONFIG);
@@ -911,6 +970,56 @@ describe("what it never records", () => {
       ),
     ).toEqual({});
     expect(recorded(env, repo)).toEqual({});
+  });
+
+  test("#934: a listed reviewer whose run was not a review: nothing recorded, one line says why", async () => {
+    const env = hookEnv();
+    const repo = makeRepo();
+    writeClaudeFile(repo, "cc-smart-dev-kit.json", CONFIG);
+    expect(
+      await review(env, repo, {
+        agent_type: REVIEWER,
+        agent_transcript_path: reviewTranscript("Mode: consult"),
+      }),
+    ).toEqual([{}, { stderr: NOT_A_REVIEW_LINE }]);
+    expect(await review(env, repo, { agent_type: REVIEWER, agent_transcript_path: null })).toEqual([
+      {},
+      { stderr: NOT_A_REVIEW_LINE },
+    ]);
+    expect(recorded(env, repo)).toEqual({});
+  });
+
+  test("#934: the stop a block caused says nothing again: the first stop already said why", async () => {
+    const env = hookEnv();
+    const repo = makeRepo();
+    writeClaudeFile(repo, "cc-smart-dev-kit.json", CONFIG);
+    const consult = reviewTranscript("Mode: consult");
+    await review(env, repo, { agent_type: REVIEWER, agent_transcript_path: consult });
+    expect(
+      await runHook(
+        reviewRecordHook,
+        stopped(repo, {
+          agent_type: REVIEWER,
+          agent_transcript_path: consult,
+          stop_hook_active: true,
+        }),
+        env,
+      ),
+    ).toEqual({});
+  });
+
+  test("an agent that is not listed says nothing, whatever its run", async () => {
+    const env = hookEnv();
+    const repo = makeRepo();
+    writeClaudeFile(repo, "cc-smart-dev-kit.json", CONFIG);
+    const folder = join(repo, ".claude", "worktrees", `agent-${AGENT_ID}`);
+    git(repo, "worktree", "add", "-q", "-b", `worktree-agent-${AGENT_ID}`, folder);
+    const consult = reviewTranscript("Mode: consult");
+    for (const cwd of [repo, folder]) {
+      expect(
+        await review(env, cwd, { agent_type: "general-purpose", agent_transcript_path: consult }),
+      ).toEqual([{}, {}]);
+    }
   });
 
   test("a project that never opted in: silent, and nothing written", async () => {
@@ -928,12 +1037,18 @@ describe("what it never records", () => {
     expect(await runHook(reviewRecordHook, stopped(repo, {}), env)).toEqual({});
   });
 
-  test("a folder with no commit yet: silent, not a failure", async () => {
+  test("a folder with no commit yet: not a failure, and the stop says why nothing is recorded", async () => {
     const env = hookEnv();
     const repo = tempDir("empty-repo");
     git(repo, "init", "-q", "-b", "main");
     writeClaudeFile(repo, "cc-smart-dev-kit.json", CONFIG);
-    expect(await review(env, repo, { agent_type: REVIEWER })).toEqual([{}, {}]);
+    expect(await review(env, repo, { agent_type: REVIEWER })).toEqual([
+      {},
+      {
+        stderr:
+          "cc-smart-dev-kit review-record: the folder has no commit yet, so no review is recorded",
+      },
+    ]);
   });
 
   test("a broken personal workflow file: nothing recorded, one stderr line", async () => {

@@ -1,9 +1,11 @@
 /**
  * Does a recorded review still count for a later head of its branch? Decision D17: a review of
- * commit R covers head H when R's record names H's branch and the change made since R — the
- * base's own changes taken out — stays within the limits committed on the base
+ * commit R covers head H when R's record names H's branch, or a local branch whose tip holds H
+ * (a builder's branch pushed under another name), and the change made since R — the base's own
+ * changes taken out — stays within the limits committed on the base
  * (`workflow.fixesAfterReview`). A review of H itself always counts, on any branch (the rule
- * before D17).
+ * before D17). A branch merged into H's, or one squash-merged below it, holds H nowhere: its
+ * review is no candidate.
  *
  * **How the change is measured, without writing into the repository:**
  *
@@ -23,11 +25,12 @@
  * it came in: a fix commit, a rebase that edits, a conflict resolved by hand, a new file.
  *
  * **What a count leaves out, and what it refuses.** Files the base marks `linguist-generated`
- * (read with `git check-attr --source=origin/<base>`: the base's attributes, never the branch's
- * own, so a pull request cannot hide a file by marking it) are listed, not counted. A binary file
- * changed after the review is never covered: its lines cannot be counted. A review whose change
- * is already all in the base (its branch was squash-merged, and the name was used again) is no
- * candidate at all.
+ * (read with `git check-attr --source=origin/<base>` and no local attribute file,
+ * `project/generated.ts`: the base's attributes, never the branch's own or the checkout's, so
+ * neither a pull request nor a session can hide a file by marking it) are listed, not counted.
+ * A binary file changed after the review is never covered: its lines cannot be counted. A review
+ * whose change is already all in the base (its branch was squash-merged, and the name was used
+ * again) is no candidate at all.
  *
  * Anything it cannot read is "not covered", with the reason: the head or the reviewed commit not
  * in this checkout (fetch it), no `origin/<base>`, git older than 2.40 (`check-attr --source`
@@ -42,14 +45,12 @@ import { join } from "node:path";
 import { COMMAND } from "../build-info/names";
 import { GIT_TIMED_OUT, type GitRun, GUARD_GIT_TIMEOUT_MS, runGitAsync } from "../hooks/git";
 import type { Env } from "../hooks/run";
+import { generatedChecks, generatedIn, openBaseOnlyGit } from "../project/generated";
 import type { Checkout } from "../project/resolve";
 import { COMMIT_SHA, type TrustedReview } from "./reviews";
 
 /** `git check-attr --source` came in git 2.40: an older git can only match the exact head. */
 export const MIN_COVER_GIT = "2.40.0";
-
-/** How many paths one `git check-attr` call names: well inside every system's argument limit. */
-const PATHS_PER_CALL = 200;
 
 /** `workflow.fixesAfterReview` as resolved: each a whole number, 0 or more. */
 export interface FixLimits {
@@ -247,6 +248,26 @@ class Uncovered extends Error {
   }
 }
 
+/** The caller's time ran out: a review measured as covering before it still covers. */
+class OutOfTime extends Uncovered {
+  constructor() {
+    super("the time to measure the change after the review ran out");
+  }
+}
+
+/**
+ * Why no review is a candidate for `head` on `branch`. `holders`: the local branches that hold
+ * the head were looked for too.
+ */
+function noReview(head: string, branch: string | null, holders = false): string {
+  const of = short(head);
+  if (branch === null) return `no review is recorded for ${of}`;
+  if (holders) {
+    return `no review is recorded for ${of}, for an earlier commit of ${branch}, or on a local branch that holds ${of}`;
+  }
+  return `no review is recorded for ${of} or for an earlier commit of ${branch}`;
+}
+
 /** A candidate review, measured. */
 interface Measured {
   review: string;
@@ -263,8 +284,10 @@ function alternateEntry(folder: string): string {
 /**
  * Whether a recorded review covers `target.head`. `records` are the repository's reviews by a
  * writer that counts (`trustedReviews`): one of the head itself covers it at once, on any
- * branch, with no git run; one recorded on `target.branch` is a candidate, measured as above.
- * The covered candidate with the smallest change is the one named; when none is covered, the
+ * branch, with no git run; one recorded on `target.branch`, or on a local branch whose tip holds
+ * the head (one `git for-each-ref --contains` call), is a candidate, measured as above, the
+ * newest first. The covered candidate with the smallest change is the one named; when the time
+ * runs out after one was found to cover, that one still covers. When none is covered, the
  * reason is about the candidate with the smallest change. Never throws.
  */
 export async function readCover(
@@ -278,25 +301,21 @@ export async function readCover(
   if (records.some((record) => record.sha === head)) {
     return { covered: true, review: head, delta: null, reviewed: null };
   }
-  const candidates = [
-    ...new Set(
-      branch === null
-        ? []
-        : records.filter((record) => record.branches.includes(branch)).map((r) => r.sha),
-    ),
-  ];
-  if (candidates.length === 0) {
-    const earlier = branch === null ? "" : ` or for an earlier commit of ${branch}`;
-    return {
-      covered: false,
-      review: null,
-      why: `no review is recorded for ${short(head)}${earlier}`,
-    };
+  // Newest first: when the time runs out, the reviews already measured are the likeliest to cover.
+  const branched =
+    branch === null
+      ? []
+      : records
+          .filter((record) => record.branches.length > 0)
+          .sort((a, b) => b.at.localeCompare(a.at));
+  const named = branched.find((record) => branch !== null && record.branches.includes(branch));
+  if (branched.length === 0 || (named === undefined && exactOnly(limits))) {
+    return { covered: false, review: null, why: noReview(head, branch) };
   }
-  if (exactOnly(limits)) {
+  if (named !== undefined && exactOnly(limits)) {
     return {
       covered: false,
-      review: candidates[0] ?? null,
+      review: named.sha,
       why: `fixesAfterReview is 0/0/0, so only a review of ${short(head)} itself counts`,
     };
   }
@@ -305,7 +324,7 @@ export async function readCover(
     objects = mkdtempSync(join(tmpdir(), `${COMMAND}-cover-`));
     // Awaited inside this try: a rejected measurement must become the answer below, never
     // escape past the `finally` that removes the temporary object folder.
-    return await measure(checkout, target, candidates, limits, git, objects);
+    return await measure(checkout, target, branched, limits, git, objects);
   } catch (error) {
     if (error instanceof Uncovered)
       return { covered: false, review: error.review, why: error.message };
@@ -320,11 +339,14 @@ export async function readCover(
   }
 }
 
-/** The measurement itself: every git call `readCover` makes. Throws `Uncovered` with a reason. */
+/**
+ * The measurement itself: every git call `readCover` makes, for the reviews in `records` (each on
+ * some branch, the newest first) that are candidates. Throws `Uncovered` with a reason.
+ */
 async function measure(
   checkout: Checkout,
   { head, branch, base }: CoverTarget,
-  candidates: readonly string[],
+  records: readonly TrustedReview[],
   limits: FixLimits,
   git: CoverGit,
   objects: string,
@@ -335,13 +357,11 @@ async function measure(
     GIT_OBJECT_DIRECTORY: objects,
     GIT_ALTERNATE_OBJECT_DIRECTORIES: alternateEntry(join(checkout.commonDir, "objects")),
   };
-  const run = async (args: string[]): Promise<GitRun> => {
+  const run = async (args: string[], vars: Record<string, string> = own): Promise<GitRun> => {
     const left = (git.timeFor ?? ((limit: number) => limit))(GUARD_GIT_TIMEOUT_MS);
-    if (left <= 0) throw new Uncovered("the time to measure the change after the review ran out");
-    const result = await (git.run ?? runGitAsync)(checkout.root, args, git.env, left, own);
-    if (result.code === null && result.err === GIT_TIMED_OUT) {
-      throw new Uncovered("the time to measure the change after the review ran out");
-    }
+    if (left <= 0) throw new OutOfTime();
+    const result = await (git.run ?? runGitAsync)(checkout.root, args, git.env, left, vars);
+    if (result.code === null && result.err === GIT_TIMED_OUT) throw new OutOfTime();
     return result;
   };
   const commit = async (rev: string): Promise<string | null> => {
@@ -356,7 +376,8 @@ async function measure(
   if (!COMMIT_SHA.test(head) || (await commit(head)) === null) {
     throw new Uncovered(`${short(head)} is not in this checkout: fetch it (git fetch origin)`);
   }
-  if ((await commit(baseRef)) === null) {
+  const baseSha = await commit(baseRef);
+  if (baseSha === null) {
     throw new Uncovered(
       `origin/${base} is not in this checkout: fetch it (git fetch origin ${base})`,
     );
@@ -390,29 +411,23 @@ async function measure(
     return parseNumstat(diff.out);
   };
   const generatedOf = async (paths: readonly string[]): Promise<Set<string>> => {
-    const generated = new Set<string>();
-    for (let at = 0; at < paths.length; at += PATHS_PER_CALL) {
-      const some = paths.slice(at, at + PATHS_PER_CALL);
-      const attrs = await run([
-        "check-attr",
-        `--source=${baseRef}`,
-        "-z",
-        "linguist-generated",
-        "--",
-        ...some,
-      ]);
-      if (!attrs.ok) {
-        throw new Uncovered(
-          `which files origin/${base} marks as generated cannot be read (${attrs.err})`,
-        );
+    // The base's own marks, never a local attribute file (`project/generated.ts`).
+    const isolated = openBaseOnlyGit(checkout.commonDir, baseSha);
+    try {
+      const generated = new Set<string>();
+      for (const args of generatedChecks(baseSha, paths)) {
+        const attrs = await run(args, isolated.env);
+        if (!attrs.ok) {
+          throw new Uncovered(
+            `which files origin/${base} marks as generated cannot be read (${attrs.err})`,
+          );
+        }
+        for (const path of generatedIn(attrs.out)) generated.add(path);
       }
-      const fields = attrs.out.split("\0");
-      for (let index = 0; index + 2 < fields.length; index += 3) {
-        const value = fields[index + 2];
-        if (value === "set" || value === "true") generated.add(fields[index] ?? "");
-      }
+      return generated;
+    } finally {
+      isolated.remove();
     }
-    return generated;
   };
   const tally = (changed: readonly Changed[], generated: ReadonlySet<string>): ChangeCount => {
     const count: ChangeCount = { lines: 0, files: 0, generated: [], binary: [] };
@@ -427,6 +442,32 @@ async function measure(
     }
     return count;
   };
+
+  const onBranch = (record: TrustedReview): boolean =>
+    branch !== null && record.branches.includes(branch);
+  let holders = new Set<string>();
+  if (!records.every(onBranch)) {
+    const holding = await run([
+      "for-each-ref",
+      `--contains=${head}`,
+      "--format=%(refname:lstrip=2)",
+      "refs/heads",
+    ]);
+    if (!holding.ok) {
+      throw new Uncovered(
+        `the local branches that hold ${short(head)} cannot be listed (${holding.err})`,
+      );
+    }
+    holders = new Set(holding.out.split("\n").filter((name) => name !== ""));
+  }
+  const candidates = [
+    ...new Set(
+      records
+        .filter((record) => onBranch(record) || record.branches.some((one) => holders.has(one)))
+        .map((record) => record.sha),
+    ),
+  ];
+  if (candidates.length === 0) throw new Uncovered(noReview(head, branch, true));
 
   const onBase = await mergeBase(head, baseRef);
   const measured: Measured[] = [];
@@ -470,6 +511,7 @@ async function measure(
         refusal: coverRefusal(delta, reviewed, limits, review),
       });
     } catch (error) {
+      if (error instanceof OutOfTime && measured.some((one) => one.refusal === null)) break;
       if (!(error instanceof Uncovered) || error.review === null) throw error;
       unread.push(error);
     }
