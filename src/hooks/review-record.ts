@@ -66,7 +66,9 @@
  * cannot be written, and the stop of a listed review agent that records nothing (its own
  * worktree, a run that was not a review, no commit, no start seen), is one line on stderr with
  * the reason, exit 0 — a subagent must always start and finish
- * (`.claude/rules/hooks-guards.md` § Fail closed). The start never says anything: its stop does.
+ * (`.claude/rules/hooks-guards.md` § Fail closed).
+ *
+ * The start never says anything: its stop does.
  */
 import type { CcSmartDevKitConfig } from "../project/config";
 import { type ResolvedWorkflow, resolveWorkflow } from "../workflow/resolve";
