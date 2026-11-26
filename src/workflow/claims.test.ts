@@ -381,6 +381,77 @@ describe("collectClaims", () => {
     });
   });
 
+  // A checkout's own attribute files are no commit: a session could write one to hide a claim
+  // or a hit from the reviewer. Only the base's committed marks leave a file out.
+  const FOUND = {
+    claims: [{ file: "docs/prices.md", line: 4, phrase: "the one home", names: ["formatPrice"] }],
+    hits: [
+      { file: "cart.ts", line: 2, name: "formatPrice", claim: { file: "docs/prices.md", line: 4 } },
+    ],
+    diffWhy: null,
+  };
+  for (const [name, mark] of [
+    [
+      "info/attributes marks every file generated",
+      (repo: string) => writeFileSync(join(repo, ".git/info/attributes"), "* linguist-generated\n"),
+    ],
+    [
+      "a core.attributesFile marks every file generated",
+      (repo: string) => {
+        const file = join(tempDir("claims-attributes"), "attributes");
+        writeFileSync(file, "* linguist-generated=true\n");
+        git(repo, "config", "core.attributesFile", file);
+      },
+    ],
+    [
+      "info/attributes calls every file binary",
+      (repo: string) => writeFileSync(join(repo, ".git/info/attributes"), "* binary\n"),
+    ],
+    [
+      "info/attributes gives every file a textconv that prints nothing",
+      (repo: string) => {
+        writeFileSync(join(repo, ".git/info/attributes"), "* diff=hide\n");
+        git(repo, "config", "diff.hide.textconv", "true");
+      },
+    ],
+    [
+      "the branch's own .gitattributes marks every file generated",
+      (repo: string) => {
+        writeFileSync(join(repo, ".gitattributes"), "* linguist-generated\n");
+        git(repo, "commit", "-q", "-am", "mark everything");
+      },
+    ],
+  ] as const) {
+    test(`security: ${name}: the claim and the hit still count`, () => {
+      const repo = repoWithBranch();
+      mark(repo);
+      expect(collectClaims(repo, cleanGitEnv(), { ref: "main" })).toEqual(FOUND);
+    });
+  }
+
+  test("a file the base marks generated is no second home", () => {
+    const repo = branchOf(
+      {
+        ".gitattributes": "gen/** linguist-generated\n",
+        "README.md": CLAIM_DOC,
+        "src/old.ts": "export function formatPrice() {}\n",
+        "gen/prices.ts": "export function formatPrice() {}\n",
+      },
+      { "src/old.ts": null, "src/new.ts": "export function formatPrice() {}\n" },
+    );
+    expect(collectClaims(repo, cleanGitEnv(), { ref: "main" })).toMatchObject({ hits: [] });
+  });
+
+  test("with no base, the generated marks are HEAD's committed ones", () => {
+    const repo = repoWithBranch();
+    writeFileSync(join(repo, ".git/info/attributes"), "* linguist-generated\n");
+    expect(collectClaims(repo, cleanGitEnv(), { why: "origin/HEAD is not set" })).toEqual({
+      ...FOUND,
+      hits: [],
+      diffWhy: "origin/HEAD is not set",
+    });
+  });
+
   test("an edit of the home's own definition is no hit", () => {
     const repo = branchOf(
       { "README.md": CLAIM_DOC, "src/prices.ts": "export function formatPrice() {}\n" },
