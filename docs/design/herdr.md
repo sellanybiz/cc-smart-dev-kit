@@ -207,8 +207,10 @@ origin/<default>...<branch>` lists both sides of a rename), so no git runs under
 **The reservation.** `reservePlan` takes the plan in one transaction. It refuses a plan with an
 open blocker, no file list or an existing reservation. Files that overlap a **held** plan, and a
 held plan with no file list and no branch diff, never refuse (6.7.0): `start --plan` and
-`plans --reserve` print a `warn` line for each, and both plans get an `Overlap:` note (the wording
-and the rule are in `docs/design/tasks.md`, under "The warning and the note"; the plan that merges
+`plans --reserve` print a `warn` line for each. An overlap of files also gives both plans an
+`Overlap:` note; a held plan with no file list gets an `Overlap unknown:` line that names the fix,
+and no note, since there are no paths to note (the wording is in `docs/design/tasks.md`, under
+"The warning and the note"; the plan that merges
 second catches up, `plugin/skills/build/SKILL.md` § 6 "An overlapping plan"). A held plan is any
 reserved plan until it is released, and any session's own plan in flight.
 `plans.mergeFiles` never counts, inside a `plans.appendOnly` folder only the same file overlaps,
@@ -290,7 +292,7 @@ has words of its own (`docs/design/tasks.md`).
 
 | `--json` state | Meaning |
 |---|---|
-| `ready` | Every blocker is clear. A plan that shares files with a held plan, or sits beside a held plan with no file list, is ready too: its line names the other plan and the files, and says an overlap warns and never holds a plan back. |
+| `ready` | Every blocker is clear. A plan that shares files with a held plan, or sits beside a held plan with no file list, is ready too. Its line reads `ready: nothing blocks it; <overlap> (an overlap warns and never holds a plan back)`, where each overlap is in the note head's words (`overlapSummary`: `#1 "a" and #2 "b" share src/x/ (src/x/y.ts)`, plus `(#n "<subject>" is finished: held until its pull request settles)` for a finished plan) or says the other plan `is held with no file list and no branch diff, so no overlap can be ruled out`, with the fix. With none: `ready: nothing blocks it and no held plan shares its files`. |
 | `waiting` | A blocker is open, or its pull request is open or not yet on the default branch. |
 | `blocked` | A blocker cannot clear by itself: no branch recorded, no start commit to prove a merge from, an empty branch, a branch not in this repository, or a pull request closed unmerged. The line carries its fix. |
 | `no-files` | No file list yet (the line says "has no file list"; the status line says "needs files"): `task_update` with `files`. |

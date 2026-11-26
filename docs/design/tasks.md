@@ -361,7 +361,9 @@ load it.`; when it is known and does not, `After an update, restart this session
 when it is unknown, both. herdr checks the same gate (`openPlansWorld` in `src/herdr/plans.ts`,
 and `startChild` and `adoptPlans` in `src/herdr/command.ts`), so `plans`, `plans --reserve`,
 `plans --release`, `start --task`, `start --plan` and `adopt` reserve, launch or move nothing
-under such a file. A folder outside git has no project file, so no gate.
+under such a file. `task import claude-mem` (`src/tasks/command.ts`), the one store writer outside
+`ops.ts` and herdr, asks the same gate before it opens the store; its `--dry-run` writes nothing,
+so it still answers. A folder outside git has no project file, so no gate.
 
 A claim belongs to the Claude process: pid plus start time, not just a session id. A task is
 the caller's own (`ownerOf` in `src/tasks/work/queries.ts`, the one rule the task tools and the
@@ -598,32 +600,47 @@ shared paths is a new note). The note is written without moving the plans' `upda
 (`saveNote`): another lead's `releasePlan`, `swapPlanAgent` and herdr's hand-out grace key on it,
 and a note is no move of the plan. The text, in this order:
 
-- the head: `Overlap: #<n> "<subject>" and #<m> "<subject>" share <paths>.`, the two plans in
-  number order and each shared path from the lower plan's list, with the higher plan's path beside
-  it when they differ (`src/b/ (src/b/x.ts)`), sorted;
+- the head: `Overlap: #<n> "<subject>" and #<m> "<subject>" share <paths>.` (`overlapSummary`,
+  the words `herdr plans` uses too), the two plans in number order and each shared path from the
+  lower plan's list, with the higher plan's path beside it when they differ (`src/b/ (src/b/x.ts)`),
+  sorted;
 - `Leads: #<n> session <id>; …`, when a lead is known (the reservation's session, else the task's
   owner);
 - for a plan that is done but still reserved, that `herdr plans` releases it when its pull request
   merges;
-- the rule: `Both may run at once: the plan that merges second rebases onto the first one's merged
-  code (or merges it in, once pushed), resolves the conflicts, reruns the full check, and names the
-  other plan and these files in its pull request.`;
+- a pointer to the rule, never a copy of it: ``Both may run at once; the plan that merges second
+  catches up (`/cc-smart-dev-kit:build` § 6, An overlapping plan).``;
 - when `plans.mergeFiles` was not read in full, that a merge file may count, and why;
 - when the shared paths hold files the base marks `linguist-generated` (read only here, only for an
   overlap, through `src/project/generated.ts` with base-only attributes; a folder entry is read as
-  the files the base holds in it): `origin/<base> marks <files> generated:` and the ready line
-  `cc-smart-dev-kit workflow propose plans.mergeFiles '<current list>,<those files>'`, which opens
-  the pull request that leaves them out of every overlap once the person merges it. The list is
-  quoted with `shellWord` (single quotes, so a `$` or a backtick in a path stays literal). With a
-  list not read in full there is no propose line, since the line replaces the whole list. Git
-  older than 2.40, or no base ref, gives the plain warning.
+  the files the base holds in it): `origin/<base> marks <files> generated`, then one of:
+  - the ready line `cc-smart-dev-kit workflow propose plans.mergeFiles <list>` (the current list
+    and those files, comma-joined), which opens the pull request that leaves them out of every overlap once the person
+    merges it. It is printed only when listing them would end the overlap: the warning runs
+    `filesOverlap` again on the two lists as compared, with that list. The value is written by
+    `shellWord`: bare when it holds only letters, digits and `_ . / -` (one plain path), else in
+    single quotes (any list of two, since a comma is quoted), so a `$` or a backtick stays literal;
+  - for a folder both plans list, which a merge file never settles (`settledBy`), the folder and
+    the two ways that do: narrow that folder entry to the files the plan changes, or put the
+    folder itself in `plans.mergeFiles`;
+  - for a list too long for one line, the same advice to put their folder in `plans.mergeFiles`.
+
+  With a list not read in full there is no propose line, since the line replaces the whole list.
+  Git older than 2.40, or no base ref, gives the plain warning. A reader that throws adds one line,
+  `The generated files could not be read: <why>`, and the warning is plain: it runs after the
+  write committed, so it never turns the answer into an error.
+
+Each list of paths in a note (the shared paths, the generated files, the folders) is capped at
+about 2,000 characters, the first path always shown, then `and <k> more`, so a note always fits
+under the note limit and is saved on both plans.
 
 **The classifier** (`classifyLeadPlans`, `src/tasks/work/lead-plans.ts`) is the store-only reader
 the status line and the keep-going hook share: no git, no gh, no hc. For the plans this caller
 leads, and the queued plans it laid, it returns `own` (holder `self`, reserved by the lead for itself), `with-child`, `child-gone`,
-`merging` (closed, still reserved), `waiting` (an open blocker), `no-files` and `ready`. `ready`
-means ready by the store: overlaps need the branch diffs, which `reservePlan` and `herdr plans`
-read. A hand-out the lead still owns reads `with-child`. After a take, `child-gone` needs the
+`merging` (closed, still reserved), `waiting` (an open blocker), `no-files` and `ready`. An
+overlap never makes a plan not ready (6.7.0), so this `ready` and `herdr plans`' agree;
+`herdr plans` also reads the branch diffs, to name an overlap in the plan's line. A hand-out the
+lead still owns reads `with-child`. After a take, `child-gone` needs the
 child's session over (`sessionEnded`: its process gone **and** no running session carries its id)
 for its maker and for its claim, if it has one. A reopened child that has not yet made a task call
 reads `with-child`, and a child that cannot be proved either way does too: a resume must never

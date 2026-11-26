@@ -106,8 +106,10 @@ code starts a mode: `/cc-smart-dev-kit:plan-task` § 6 asks under `ask`, and
 committed.** `mergeFiles` is a list of paths every plan touches and each merge settles (a version
 manifest, a changelog, a lockfile, build output); the plans' overlap warning (`docs/design/tasks.md`
 § Plans handed to children; an overlap warns and never refuses since 6.7.0) leaves them out, and
-when an overlap's shared files include ones the base marks `linguist-generated` the warning prints
-the ready `workflow propose plans.mergeFiles '<current list>,<those files>'` line. `appendOnly` (6.3.0) is a list of folders where plans
+when an overlap's shared files include ones the base marks `linguist-generated` the warning names
+them, and prints the ready `workflow propose plans.mergeFiles '<current list>,<those files>'` line
+only when listing them would end the overlap (`docs/design/tasks.md` § Plans handed to children,
+"The warning and the note"). `appendOnly` (6.3.0) is a list of folders where plans
 add new files (a migrations folder): inside one, two plans overlap only when they list the same
 file. A session that could widen either would hide its own plan's overlaps from every other
 session, so the store and herdr never use the working copy. `resolvePlanFiles` (`src/workflow/resolve.ts`) reads both from one read of the
@@ -344,9 +346,11 @@ installed packages (lefthook, say) made the old worktree-and-commit path fail. W
 and `--no-verify` on the push, no pre-commit, commit-msg, post-checkout or pre-push hook runs. The
 cost, said in the output, the commit message and the body (`MADE_WITHOUT_HOOKS`): a line a hook
 adds (a sign-off) is missing, and a clean filter on the file did not run; the review and CI are
-its gate. **A known limit:** a project `reference-transaction` hook still runs, on the push's
-update of the local remote-tracking ref; `--no-verify` does not cover it, and lefthook and husky
-do not install one by default.
+its gate. **A known limit:** a project `reference-transaction` hook still runs, since git runs it
+on every ref update and `--no-verify` does not cover it: on the fetch (it updates
+`origin/<base>`), on the push and on the take-back delete (each updates the local
+remote-tracking ref). A failing one at the fetch stops the run there, before anything is made.
+lefthook and husky do not install one by default.
 
 A setting the project's file cannot hold — the status-line and update-hold switches, which are
 the person's, per machine — is refused before the fetch, with the command that does change it.
@@ -415,11 +419,17 @@ review of H itself covers H on any branch, as before. The one home is
   `plugin/dist/**`) are listed, not counted. **Only the base's committed marks count** (6.7.0,
   `src/project/generated.ts`, the one home of that read): git also adds three local files on top
   of a commit's attributes (gitattributes(5)), and a session could write any of them without a
-  commit. So each call runs with a throwaway `GIT_DIR` that borrows the repository's objects
-  through `objects/info/alternates` (no `info/attributes`, no repository config), with
-  `-c core.attributesFile=` (no personal file, its XDG default included) and with
-  `GIT_ATTR_NOSYSTEM=1` (no system file; this one rests on git(1) alone, since a test cannot write
-  the system file). A binary file in the change is never covered.
+  commit. So each call runs in a throwaway git folder (`openBaseOnlyGit`): its own `GIT_DIR`, which
+  borrows the repository's objects through `objects/info/alternates` (no `info/attributes`, no
+  repository config); `-c core.attributesFile=<folder>/none`, a file that never exists (no
+  personal file, its XDG default included, on any git version) and `-c core.ignoreCase=false`;
+  `GIT_CONFIG_GLOBAL=<folder>/none` and `GIT_CONFIG_NOSYSTEM=1` (no personal or system config);
+  and `GIT_ATTR_NOSYSTEM=1` (no system file; no manual page lists it, git's `attr.c` reads it, and
+  a test cannot write the system file). **What counts as binary is the base's too** (6.7.0): the
+  `git diff --numstat` runs in that folder's own work tree, which a sparse `read-tree` fills with
+  the base's `.gitattributes` files and nothing else, so a local `* binary` cannot zero a text
+  change's lines, and a local mark cannot make a real binary count as text. A binary file in the
+  change is never covered.
 - Anything it cannot read is "not covered", with the reason: the head or the reviewed commit not in
   this checkout ("fetch it"), no `origin/<base>`, the caller's time running out, or git older than
   2.40 (`check-attr --source` came in 2.40; `doctor` warns with one `!` line, and such a machine
@@ -501,7 +511,7 @@ the first start stays when a resumed agent starts again; a day-old start is drop
 it takes that start back and records **the start commit, on its branch** — never the commit the
 folder is on at the stop: a fix committed while the reviewer read is a fix it never saw, and it
 counts as change after the review like every later fix (D17, above). A stop with no start seen
-records nothing (one stderr line says to run the review again). The names are compared by
+records nothing (one stderr line says to run the review again; it lands in Claude Code's debug log, see below). The names are compared by
 `recordsReview` in `reviews.ts`, the one home of that question: a `plugin:name` exactly, a bare
 name only for an agent with no plugin prefix — Claude Code reports a plugin agent as
 `plugin:name` (code.claude.com/docs/en/hooks § SubagentStart), so another plugin's
@@ -518,11 +528,15 @@ folder names its own `agent_id`, both read through `agentIdKey` (`inOwnWorktree`
 a fresh one from the base, never the commit a reviewer read. A session that stands in another
 agent's worktree, a builder's, records there like any folder (6.7.0; before, the folder's shape
 alone skipped it). Success prints nothing at all. A record that cannot be written is one stderr
-line, exit 0, and so is the stop of a listed reviewer that records nothing, with its reason: its
-own worktree (`run the reviewer without isolation`), not a review run or no readable transcript,
-no commit yet, or no start seen. A stop a block caused (`stop_hook_active`) says nothing again,
-and an agent with no `agent_id` stays silent, since its start cannot be matched to its stop. So
-every consult of a listed reviewer ends with one such line. `cc-smart-dev-kit workflow review-done [--sha <commit>]` stays for the
+line, exit 0, and so is the stop of a listed reviewer that records nothing, with its reason: not a
+review run or no readable transcript (checked first, so a consult in its own worktree is told
+that), its own worktree (`run the reviewer without isolation`), no commit yet, or no start seen.
+A stop a block caused (`stop_hook_active`) says nothing again, and an agent with no `agent_id`
+stays silent, since its start cannot be matched to its stop. So every consult of a listed
+reviewer ends with one such line. **Neither the lead nor the person sees it:** Claude Code never
+shows a hook's stderr at exit 0 to Claude, and puts it only in its debug log
+(`docs/claude-code-contract.md`). What a session meets is the missing record, when it merges
+(`workflow merge-check`). `cc-smart-dev-kit workflow review-done [--sha <commit>]` stays for the
 person's own terminal and **refuses inside Claude Code** (`CLAUDECODE`): it resolves the
 commit with `git rev-parse` and records it `by` the person, which the judgment trusts whatever
 the list says; `cc-smart-dev-kit workflow show` prints whether the commit here has a record
