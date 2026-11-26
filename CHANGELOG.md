@@ -3,6 +3,32 @@
 What each release changed, newest first. A release's **What to run** steps are the ones to do
 in your own terminal after the update; the user guide is [README.md](README.md).
 
+## 6.7.1
+
+Moves seven copies that a slop audit found back onto their one shared home
+(`.claude/audits/2026-11-26-slop-homes.md`). Three had already drifted from the home:
+
+- **A `workflow.json` saved with a byte order mark reads.** Windows Notepad adds one. The read
+  path refused such a file while `workflow set` accepted it, and the hooks then dropped your
+  defaults without a word. The file, and the status-line check of `~/.claude/settings.json`, now
+  go through the kit's shared reader for files a person edits, which skips the mark.
+- **`workflow propose` starts `gh pr create` through the kit's one `gh` runner,** and so does
+  `project init`, which now opens no console window on Windows. A `gh` stopped by a signal still
+  keeps the pushed branch, because the pull request may exist.
+- **A deploy skill in a folder whose name starts with `..`** (for example a `.claude` link to
+  `..config/claude`) is searched again. `doctor` and `project init` no longer call it a link
+  outside the checkout. The same test, in one place now, also lets `setup`'s PATH line write a
+  bin folder under a home folder such as `~/..local` from `$HOME`.
+
+The other four behave as before:
+
+- commit lookups use one helper, and a name that starts with `-` still names no commit;
+- the deploy-task reader reads files through the shared git runner;
+- herdr's texts build the task tool names from their one table, and a test fails on a typed name;
+- herdr's follow-up gate reads a branch's commit the same way the start does.
+
+**What to run:** `cc-smart-dev-kit update`.
+
 ## 6.7.0
 
 Fixes four problems that sessions in real projects reported, and lets plans that share files run

@@ -1,5 +1,5 @@
 import { existsSync, mkdirSync, rmSync } from "node:fs";
-import { basename, delimiter, dirname, isAbsolute, join, relative } from "node:path";
+import { basename, delimiter, dirname, join, relative } from "node:path";
 import { browserSetupReport, realBrowserSetupDeps } from "../browser/setup";
 import {
   COMMAND,
@@ -51,6 +51,7 @@ import {
 import { applySerenaCleanup, planRetiredServers, planSerenaCleanup } from "../mcp/retired";
 import { mcpServers } from "../mcp/servers";
 import { readTavilyKey, TAVILY_KEY_PATH } from "../mcp/tavily";
+import { isStrictlyInside } from "../path-compare";
 import {
   AUTO_MODE_PATH,
   type AutoModeSource,
@@ -816,7 +817,7 @@ export function pathStep(
     return `Add ${paths.binDir} to your PATH, so the ${COMMAND} command works: Windows Settings → System → About → Advanced system settings → Environment Variables → Path for your account. Then open a new terminal.`;
   }
   const inHome = relative(paths.home, paths.binDir);
-  const underHome = inHome !== "" && !inHome.startsWith("..") && !isAbsolute(inHome);
+  const underHome = isStrictlyInside(paths.binDir, paths.home);
   const shown = tildify(paths.binDir, paths.home);
   const why = `Add ${shown} to your PATH, so the ${COMMAND} command works`;
   const shell = basename(env.SHELL ?? "");

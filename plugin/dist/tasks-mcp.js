@@ -21525,7 +21525,7 @@ var COMMAND = "cc-smart-dev-kit";
 
 // src/build-info/index.ts
 var info = {
-  version: "6.7.0",
+  version: "6.7.1",
   repo: "sellanybiz/cc-smart-dev-kit",
   dependencies: [
     {
@@ -21551,7 +21551,7 @@ var TASKS_SERVER_NAME = `${COMMAND}-tasks`;
 
 // src/tasks/ops.ts
 import { existsSync as existsSync9, readFileSync as readFileSync9, rmSync as rmSync4, statSync as statSync4 } from "fs";
-import { join as join9, relative as relative2 } from "path";
+import { join as join9, relative } from "path";
 
 // src/tasks/schemas.ts
 import { isAbsolute } from "path";
@@ -21742,7 +21742,7 @@ var taskSchemas = {
     ...bindings,
     subject: subject.optional(),
     description: description.optional(),
-    status: _enum(["pending", "in_progress", "done", "dropped", "open"]).optional().describe("open reopens a closed deploy task (a deploy that was rolled back); a work task has pending and in_progress. Close a task with task_done."),
+    status: _enum(["pending", "in_progress", "done", "dropped", "open"]).optional().describe(`open reopens a closed deploy task (a deploy that was rolled back); a work task has pending and in_progress. Close a task with ${TASK_TOOL.done}.`),
     parent: ref.nullable().optional(),
     type: type.optional(),
     blocked_by_add: blockedBy.optional(),
@@ -21871,7 +21871,17 @@ function cappedHookList(items, render, command, separator = ", ") {
 }
 
 // src/path-compare.ts
+import { dirname, resolve } from "path";
 var IGNORE_CASE = process.platform === "win32";
+function isInside(path, folder, ignoreCase = IGNORE_CASE) {
+  const child = pathForm(path, ignoreCase);
+  const parent = pathForm(folder, ignoreCase);
+  return child === parent || child.startsWith(`${parent}/`);
+}
+function pathForm(path, ignoreCase = IGNORE_CASE) {
+  const forward = resolve(path.replace(/\\/g, "/")).replace(/\\/g, "/").replace(/\/+$/, "");
+  return ignoreCase ? forward.toLowerCase() : forward;
+}
 
 // src/project/git-env.ts
 var REPO_SELECTING_GIT_VARS = [
@@ -21933,9 +21943,9 @@ import {
   unlinkSync,
   writeFileSync
 } from "fs";
-import { basename, dirname, join as join3, resolve } from "path";
+import { basename, dirname as dirname2, join as join3, resolve as resolve2 } from "path";
 function writeTemp(file, content, mode) {
-  const dir = dirname(file);
+  const dir = dirname2(file);
   mkdirSync(dir, { recursive: true });
   const temp = join3(dir, `.${basename(file)}.cc-smart-dev-kit-tmp-${process.pid}-${crypto.randomUUID()}`);
   try {
@@ -24251,7 +24261,7 @@ function withoutText(read) {
 function readTarget(branch, options) {
   const ref = `origin/${branch}`;
   const at = options.commit ?? `refs/remotes/${ref}`;
-  return { at: `${at}^{commit}`, ref, where: `${ref}:${CONFIG_PATH}` };
+  return { at, ref, where: `${ref}:${CONFIG_PATH}` };
 }
 function readCommittedConfig(checkout, branch, options = {}) {
   return withoutText(readCommittedFile(checkout, branch, options));
@@ -24259,7 +24269,7 @@ function readCommittedConfig(checkout, branch, options = {}) {
 function readCommittedFile(checkout, branch, options = {}) {
   const { at, ref, where } = readTarget(branch, options);
   const git = gitIn(checkout.root, gitEnv(options.env ?? process.env), options.timeoutMs, options.timeFor);
-  const commit = git(["rev-parse", "--verify", "--quiet", at]);
+  const commit = git(commitArgs(at));
   if (!commit.ok)
     return refNotKnown(where, ref, commit);
   const blob = git(["rev-parse", "--verify", "--quiet", `${commit.stdout.trim()}:${CONFIG_PATH}`]);
@@ -24344,7 +24354,7 @@ function invalidJson(file, error) {
 function parseWorkflowText(text, file) {
   let raw;
   try {
-    raw = JSON.parse(text);
+    raw = parseUserJson(text);
   } catch (error) {
     throw invalidJson(file, error);
   }
@@ -24468,15 +24478,20 @@ function findUserInstall(installedPluginsFile, pluginId = PLUGIN_ID) {
 
 // src/tasks/deploy/files.ts
 import { existsSync as existsSync6, mkdirSync as mkdirSync2, readdirSync as readdirSync2, readFileSync as readFileSync5, rmSync, writeFileSync as writeFileSync2 } from "fs";
-import { basename as basename2, dirname as dirname2, isAbsolute as isAbsolute2, join as join5, relative, resolve as resolve2, sep as sep2 } from "path";
+import { basename as basename2, dirname as dirname3, isAbsolute as isAbsolute2, join as join5, resolve as resolve3 } from "path";
 var DEFAULT_TASKS_DIR = ".claude/tasks";
+var OUTSIDE_CHECKOUT = "Task folder must be inside the checkout";
+function taskFolderIn(checkoutRoot, dir) {
+  const target = resolve3(checkoutRoot, dir);
+  if (!isInside(target, checkoutRoot))
+    throw new Error(OUTSIDE_CHECKOUT);
+  return target;
+}
 function deployTasksDir(checkoutRoot, settings) {
   const dir = settings.dir ?? DEFAULT_TASKS_DIR;
-  const target = resolve2(checkoutRoot, dir);
-  const rel = relative(checkoutRoot, target);
-  if (isAbsolute2(dir) || rel === ".." || rel.startsWith(`..${sep2}`))
-    throw new Error("Task folder must be inside the checkout");
-  return target;
+  if (isAbsolute2(dir))
+    throw new Error(OUTSIDE_CHECKOUT);
+  return taskFolderIn(checkoutRoot, dir);
 }
 function isTaskFile(name) {
   return !name.startsWith(".") && name !== "README.md" && name.endsWith(".md");
@@ -24486,7 +24501,7 @@ function envFolder(dir, env) {
   return join5(dir, env);
 }
 function isArchived(file) {
-  return basename2(dirname2(file)) === ARCHIVE;
+  return basename2(dirname3(file)) === ARCHIVE;
 }
 function archiveFolder(dir, env) {
   return join5(dir, env, ARCHIVE);
@@ -25260,7 +25275,7 @@ function claimState(task, process2, who) {
 // src/tasks/work/db.ts
 import { Database } from "bun:sqlite";
 import { chmodSync as chmodSync2, existsSync as existsSync7, mkdirSync as mkdirSync3, renameSync as renameSync2, rmSync as rmSync2, writeFileSync as writeFileSync3 } from "fs";
-import { dirname as dirname3, join as join6 } from "path";
+import { dirname as dirname4, join as join6 } from "path";
 var WORK_SCHEMA_VERSION = 7;
 var LEGACY_LIFT_REASON = "lift legacy nested task";
 var WRITE_TIMEOUT_MS = 3000;
@@ -25374,7 +25389,7 @@ function repairTaskLayers(sqlite, file) {
           } catch (cleanupError) {
             cleanup = ` Temporary backup cleanup also failed: ${String(cleanupError)}.`;
           }
-          throw new BackupFailure(`task lift needs a backup: ${error instanceof Error ? error.message : String(error)}. Fix: free disk space and check folder rights for ${dirname3(file)}. The next task call tries again.${cleanup}`);
+          throw new BackupFailure(`task lift needs a backup: ${error instanceof Error ? error.message : String(error)}. Fix: free disk space and check folder rights for ${dirname4(file)}. The next task call tries again.${cleanup}`);
         }
       }
       backed = true;
@@ -25429,14 +25444,14 @@ function openWorkDb(file, options) {
   if (hook && fresh)
     throw new Error("task store does not exist");
   if (!hook)
-    mkdirSync3(dirname3(file), { recursive: true, mode: 448 });
+    mkdirSync3(dirname4(file), { recursive: true, mode: 448 });
   const sqlite = new Database(file, { create: !hook, readwrite: true });
   let writeRefusal;
   try {
     sqlite.run(`PRAGMA busy_timeout = ${hook ? HOOK_TIMEOUT_MS : WRITE_TIMEOUT_MS}`);
     sqlite.run("PRAGMA foreign_keys = ON");
     if (!hook) {
-      chmodSync2(dirname3(file), 448);
+      chmodSync2(dirname4(file), 448);
       chmodSync2(file, 384);
       if (fresh)
         sqlite.run("PRAGMA journal_mode = WAL");
@@ -26254,7 +26269,7 @@ function blockMessage(refusal, task, other) {
 }
 function openPlanValid(tasks, plan) {
   if (!planIsOpen(tasks, plan))
-    throw new Error(`Plan "${plan}" is closed: reopen it with task_update, or create a loose task (no plan).`);
+    throw new Error(`Plan "${plan}" is closed: reopen it with ${TASK_TOOL.update}, or create a loose task (no plan).`);
 }
 function storeFiles(db, task, files) {
   if (task.kind !== "plan")
@@ -26940,7 +26955,7 @@ function staleBriefWarning(check) {
   if (writtenAt === null || files.length === 0)
     return null;
   const ref = `refs/remotes/origin/${base}`;
-  const known = git(["rev-parse", "--verify", "--quiet", `${ref}^{commit}`]);
+  const known = git(commitArgs(ref));
   if (!known.ok && known.code === 1)
     return null;
   const since = new Date(Math.floor(writtenAt / 1000) * 1000).toISOString();
@@ -26985,28 +27000,16 @@ function staleBriefWarning(check) {
 var gap = (why) => ({ proved: false, gap: why });
 function branchTip(git, branch) {
   for (const ref of [`refs/heads/${branch}`, `refs/remotes/origin/${branch}`]) {
-    const run = git(["rev-parse", "--verify", "--quiet", `${ref}^{commit}`]);
-    if (run.ok && run.out !== "")
-      return run.out;
+    const commit = commitIn(git(commitArgs(ref)));
+    if (commit !== null)
+      return commit;
   }
   return null;
 }
 function defaultTip(git, defaultBranch) {
   if (defaultBranch === null)
     return null;
-  const run = git([
-    "rev-parse",
-    "--verify",
-    "--quiet",
-    `refs/remotes/origin/${defaultBranch}^{commit}`
-  ]);
-  return run.ok && run.out !== "" ? run.out : null;
-}
-function commitOf(git, name) {
-  if (name.startsWith("-"))
-    return null;
-  const run = git(["rev-parse", "--verify", "--quiet", `${name}^{commit}`]);
-  return run.ok && run.out !== "" ? run.out : null;
+  return commitIn(git(commitArgs(`refs/remotes/origin/${defaultBranch}`)));
 }
 function isAncestor(git, commit, tip) {
   const run = git(["merge-base", "--is-ancestor", commit, tip]);
@@ -27027,7 +27030,7 @@ function stackHolds(git, onDefault, { parent, child, grandparent, start, given }
     return gap("git");
   if (empty)
     return gap("parent-empty");
-  const parentStart = parent.base === null ? null : commitOf(git, parent.base);
+  const parentStart = parent.base === null ? null : commitIn(git(commitArgs(parent.base)));
   if (parentStart === null)
     return gap("parent-base");
   const fences = [onDefault];
@@ -27037,7 +27040,7 @@ function stackHolds(git, onDefault, { parent, child, grandparent, start, given }
       return gap("chain-branch");
     fences.push(chain);
   }
-  const from = start === null ? null : commitOf(git, start);
+  const from = start === null ? null : commitIn(git(commitArgs(start)));
   if (from === null)
     return gap("no-start");
   if (!given && child.branch === null)
@@ -27146,7 +27149,7 @@ function personOnly(id, action, command) {
   return `${id} is blocking: only the person ${action}. Ask the person to run \`${TASK_COMMAND} ${command}\` in their own terminal, outside Claude Code`;
 }
 function deployWrote(root, file) {
-  return `${relative2(root, file)} \xB7 written in ${root}: commit the file with your branch`;
+  return `${relative(root, file)} \xB7 written in ${root}: commit the file with your branch`;
 }
 function deployTasksIn(root) {
   return `Deploy tasks in ${root}:`;
@@ -27156,7 +27159,7 @@ function isFolderOnDisk(root, path) {
   return existsSync9(full) && statSync4(full).isDirectory();
 }
 var DEPLOY_NOT_READ = "Deploy tasks were not read.";
-var DELETE_TRACKED = "Tracked deploy task: it is part of a commit, so close it with task_done instead";
+var DELETE_TRACKED = `Tracked deploy task: it is part of a commit, so close it with ${TASK_TOOL.done} instead`;
 var TASK_LINE_CAP = 200;
 var TASK_TEXT_CAP = 20000;
 function value(result) {
@@ -27439,9 +27442,9 @@ function createTaskOps(options = {}) {
         const blockedBy = input.blocked_by?.map((r) => work(r).id) ?? [];
         const notPlanTask = input.phase !== undefined || input.plan === undefined || input.parent !== undefined;
         if (input.files !== undefined && notPlanTask)
-          throw new Error("files belong to a plan task: create the plan with plan and a subject (no phase, no parent), or set files on it with task_update");
+          throw new Error(`files belong to a plan task: create the plan with plan and a subject (no phase, no parent), or set files on it with ${TASK_TOOL.update}`);
         if (input.stacked_on !== undefined && notPlanTask)
-          throw new Error("stacked_on belongs to a plan task: create the plan with plan and a subject (no phase, no parent), or set it with task_update");
+          throw new Error(`stacked_on belongs to a plan task: create the plan with plan and a subject (no phase, no parent), or set it with ${TASK_TOOL.update}`);
         if (input.phase !== undefined || input.plan !== undefined && input.parent === undefined) {
           if (input.parent !== undefined)
             throw new Error("A plan stays at the top and a phase under its plan: leave out parent");
@@ -27690,7 +27693,7 @@ History: not committed yet.`;
             "--date=iso-strict",
             "--format=%ad %an %h %s",
             "--",
-            relative2(root, file)
+            relative(root, file)
           ], env);
           const history = !log.ok ? `History: git could not read it (${log.err})` : log.out ? `History (git, oldest first):
 ${log.out.split(`
@@ -27743,10 +27746,10 @@ ${historyText(gone, { full: input.history })}`;
           const guarded = options.refuseBlockingDrop && task.status === "open" && task.type === "blocking";
           const trackedRefusal = guarded ? personOnly(task.id, "drops a blocking deploy task", `drop ${task.id} --note "<reason>"`) : DELETE_TRACKED;
           const root = deployRoot();
-          const tracked = runGit(root, ["ls-files", "--error-unmatch", "--", relative2(root, task.file)], env);
+          const tracked = runGit(root, ["ls-files", "--error-unmatch", "--", relative(root, task.file)], env);
           if (tracked.ok)
             throw new Error(trackedRefusal);
-          const index = runGit(root, ["ls-files", "--", relative2(root, task.file)], env);
+          const index = runGit(root, ["ls-files", "--", relative(root, task.file)], env);
           if (!index.ok)
             throw new Error(`Could not read git's index: ${index.err}`);
           if (index.out)
@@ -27756,7 +27759,7 @@ ${historyText(gone, { full: input.history })}`;
           rmSync4(task.file);
           return {
             ok: true,
-            text: `${input.task} \xB7 deleted \xB7 ${relative2(root, task.file)} \xB7 removed from ${root}`
+            text: `${input.task} \xB7 deleted \xB7 ${relative(root, task.file)} \xB7 removed from ${root}`
           };
         }
         const result = deleteTask(store, work(input.task).id, who, now);
@@ -27849,14 +27852,14 @@ ${t.body}`.toLowerCase().includes(input.text.toLowerCase()));
 // src/tasks/mcp.ts
 var TASK_SERVER_INSTRUCTIONS = `These tools are your session's task list. Work tasks stay on this machine.
 A step owed before or after a deploy to prod or staging is a deploy task (kind prod or staging): its file travels with your branch, so commit it. Before any deploy, production or database work, list them (${TASK_TOOL.list} with scope project); close each with evidence (/${PLUGIN}:tasks).
-The phase task's description is the builder's brief. Read it with task_get; save the report with task_note, starting Report:.
+The phase task's description is the builder's brief. Read it with ${TASK_TOOL.get}; save the report with ${TASK_TOOL.note}, starting Report:.
 The main session saves Ruling: notes and sets agent, branch, worktree and base on the phase.
-After compaction, task_list scope plan and git log are the truth.
+After compaction, ${TASK_TOOL.list} scope plan and git log are the truth.
 Finish or drop every blocking task before marking its parent done.
 Three layers: plan \u203A phase \u203A task. A non-blocking task holds nothing; a task blocked by an open task waits for it.
 A plan holds at most plans.maxPhases phases, and a phase starts only once it holds tasks. Lay phases in any of your plans, up front; run one plan at a time: starting work in a plan puts it in flight, and a start in another plan is refused until the first is finished or parked (park = its plan task to pending, once its phases stop; resume = start a phase again). A later ask waits as a task under its plan (parent = the plan's #n). A task made with no plan and no parent is loose: a small fix needs no plan, and it never joins or starts one.
 A step of a phase closes done with evidence, or dropped with a note that gives the reason. A phase with a recorded branch closes done only once that branch has a commit past its base and is in the plan branch.
-A plan task holds its file list (files on task_create or task_update): repo-relative paths, a folder ends in /. Plans whose files overlap may run at once: ${OVERLAP_WARNS}.
+A plan task holds its file list (files on ${TASK_TOOL.create} or ${TASK_TOOL.update}): repo-relative paths, a folder ends in /. Plans whose files overlap may run at once: ${OVERLAP_WARNS}.
 Save notes as you go with ${TASK_TOOL.note}.`;
 var descriptions = {
   take: "Take a plan or task into the calling session. Live claims need force; a refusal changes nothing.",

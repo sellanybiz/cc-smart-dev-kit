@@ -328,7 +328,7 @@ function blockMessage(refusal: BlockRefusal, task: WorkTask, other: WorkTask): s
 function openPlanValid(tasks: readonly WorkTask[], plan: string): void {
   if (!planIsOpen(tasks, plan))
     throw new Error(
-      `Plan "${plan}" is closed: reopen it with task_update, or create a loose task (no plan).`,
+      `Plan "${plan}" is closed: reopen it with ${TASK_TOOL.update}, or create a loose task (no plan).`,
     );
 }
 /** Replaces a plan's stored file list with `files`, each entry normalised (D2). Only a plan has one. */

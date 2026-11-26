@@ -116,10 +116,10 @@ word and the number. The code is `src/issues/`
    access, and with the found label the dedupe would be lost; a **public** repository needs `issues.allowPublic` (refused, naming the command that
    turns it on).
 
-`gh` is started through the one runner (`runGh` in `src/workflow/merge-check.ts`: a timeout, no
-console window on Windows, never a blocking spawn). A read gets `GH_TIMEOUT_MS` and a write
-`GH_WRITE_TIMEOUT_MS`. A missing `gh`, a logged-out one and a timeout are each a refusal with its
-fix. The body goes on standard input.
+`gh` is started through the kit's one awaited runner (`runGh` in `src/workflow/merge-check.ts`:
+a timeout, no console window on Windows, never a blocking spawn). A read gets `GH_TIMEOUT_MS` and
+a write `GH_WRITE_TIMEOUT_MS`. A missing `gh`, a logged-out one and a timeout are each a refusal
+with its fix. The body goes on standard input.
 
 ### The hidden marker
 

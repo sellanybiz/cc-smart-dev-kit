@@ -439,7 +439,7 @@ var init_state = __esm(() => {
 });
 // src/build-info/index.ts
 var info = {
-  version: "6.7.0",
+  version: "6.7.1",
   repo: "sellanybiz/cc-smart-dev-kit",
   dependencies: [
     {
@@ -8711,6 +8711,7 @@ var init_config = __esm(() => {
 
 // src/project/resolve.ts
 var init_resolve = __esm(() => {
+  init_git();
   init_config();
   init_config_facts();
   init_git_env();
@@ -8806,7 +8807,7 @@ function invalidJson(file, error) {
 function parseWorkflowText(text, file) {
   let raw;
   try {
-    raw = JSON.parse(text);
+    raw = parseUserJson(text);
   } catch (error) {
     throw invalidJson(file, error);
   }
@@ -8860,7 +8861,7 @@ function plansFrom(personal, project) {
 }
 function statusLineIsOurs(paths) {
   try {
-    const parsed = JSON.parse(readFileSync6(paths.settingsFile, "utf8"));
+    const parsed = readUserJson(paths.settingsFile);
     if (typeof parsed !== "object" || parsed === null)
       return false;
     const statusLine = parsed.statusLine;
@@ -8924,6 +8925,7 @@ var init_resolve2 = __esm(() => {
   init_git();
   init_resolve();
   init_statusline();
+  init_user_json();
   init_state();
   init_schema();
   WorkflowConfigError = class WorkflowConfigError extends Error {
@@ -8938,12 +8940,14 @@ var init_installed_plugins = __esm(() => {
 
 // src/tasks/deploy/files.ts
 var init_files = __esm(() => {
+  init_path_compare();
   init_write();
   init_format();
 });
 
 // src/tasks/deploy/check.ts
 var init_check = __esm(() => {
+  init_path_compare();
   init_config();
   init_words();
   init_files();
@@ -10135,7 +10139,7 @@ import {
   unlinkSync as unlinkSync2
 } from "fs";
 import { dirname as dirname3, join as join7 } from "path";
-var PARSER_FINGERPRINT = "e8f36a50af9582ba2986fcdc57a830efb02c05b6c3ee3fb6e5eb73c29a6778d5";
+var PARSER_FINGERPRINT = "cf83d28a9adcc460bb6ed14ca8396360e3e093bc64ef4a44a7d36ab2374eb526";
 var CHECKED_DIR = "checked";
 var CHECKED_CACHE_LIMIT = 64;
 var CHECKED_FILE_MAX_BYTES = 256 * 1024;

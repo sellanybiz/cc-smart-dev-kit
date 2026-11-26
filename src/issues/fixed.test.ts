@@ -374,6 +374,16 @@ describe("listFixed: the Fixes lines of a release", () => {
     expect(out.kind).toBe("failed");
   });
 
+  test("a base that starts with a dash is no branch, never an option to git", async () => {
+    const made = issuesWorld();
+    const gate = await openGate(made.world);
+    if (gate.kind !== "ready") throw new Error(`gate: ${gate.kind}`);
+    expect(await listFixed(gate, { base: "--all", head: "main" })).toEqual({
+      kind: "failed",
+      why: "--all is no branch or commit in this folder",
+    });
+  });
+
   test("GitHub unreachable: failed, never an empty list that looks complete", async () => {
     const made = issuesWorld();
     const gate = await openGate(made.world);

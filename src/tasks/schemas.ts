@@ -1,7 +1,7 @@
 import { isAbsolute } from "node:path";
 import { z } from "zod";
 import { DEPLOY_ENVS, DEPLOY_TYPES, deployTaskSchema } from "./deploy/format";
-import { PHASE_RULE, PLAN_FILES_WORDS, STACKED_ON_WORDS } from "./words";
+import { PHASE_RULE, PLAN_FILES_WORDS, STACKED_ON_WORDS, TASK_TOOL } from "./words";
 import { DESCRIPTION_LIMIT, NOTE_LIMIT, SUBJECT_LIMIT } from "./work/types";
 
 const fields = deployTaskSchema.shape;
@@ -109,7 +109,7 @@ export const taskSchemas = {
         .enum(["pending", "in_progress", "done", "dropped", "open"])
         .optional()
         .describe(
-          "open reopens a closed deploy task (a deploy that was rolled back); a work task has pending and in_progress. Close a task with task_done.",
+          `open reopens a closed deploy task (a deploy that was rolled back); a work task has pending and in_progress. Close a task with ${TASK_TOOL.done}.`,
         ),
       parent: ref.nullable().optional(),
       type: type.optional(),

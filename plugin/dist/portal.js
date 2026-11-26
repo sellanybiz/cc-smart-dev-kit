@@ -39,7 +39,7 @@ var MIN_BUN = "1.4.3";
 
 // src/build-info/index.ts
 var info = {
-  version: "6.7.0",
+  version: "6.7.1",
   repo: "sellanybiz/cc-smart-dev-kit",
   dependencies: [
     {
@@ -10972,7 +10972,7 @@ function withoutText(read) {
 function readTarget(branch, options) {
   const ref = `origin/${branch}`;
   const at = options.commit ?? `refs/remotes/${ref}`;
-  return { at: `${at}^{commit}`, ref, where: `${ref}:${CONFIG_PATH}` };
+  return { at, ref, where: `${ref}:${CONFIG_PATH}` };
 }
 function readCommittedConfig(checkout, branch, options = {}) {
   return withoutText(readCommittedFile(checkout, branch, options));
@@ -10980,7 +10980,7 @@ function readCommittedConfig(checkout, branch, options = {}) {
 function readCommittedFile(checkout, branch, options = {}) {
   const { at, ref, where } = readTarget(branch, options);
   const git = gitIn(checkout.root, gitEnv(options.env ?? process.env), options.timeoutMs, options.timeFor);
-  const commit = git(["rev-parse", "--verify", "--quiet", at]);
+  const commit = git(commitArgs(at));
   if (!commit.ok)
     return refNotKnown(where, ref, commit);
   const blob = git(["rev-parse", "--verify", "--quiet", `${commit.stdout.trim()}:${CONFIG_PATH}`]);
@@ -10994,7 +10994,7 @@ function readCommittedFile(checkout, branch, options = {}) {
 async function readCommittedConfigAsync(checkout, branch, options = {}) {
   const { at, ref, where } = readTarget(branch, options);
   const git = gitInAsync(checkout.root, gitEnv(options.env ?? process.env), options.timeoutMs, options.timeFor);
-  const commit = await git(["rev-parse", "--verify", "--quiet", at]);
+  const commit = await git(commitArgs(at));
   if (!commit.ok)
     return refNotKnown(where, ref, commit);
   const blob = await git([
@@ -11019,6 +11019,7 @@ async function resolveProjectAsync(cwd, options = {}) {
   return checkout === null ? null : loadProjectConfig(checkout, options.pluginVersion);
 }
 var init_resolve = __esm(() => {
+  init_git();
   init_config();
   init_config_facts();
   init_git_env();
@@ -11159,14 +11160,18 @@ var init_sessions = __esm(() => {
 
 // src/tasks/deploy/files.ts
 import { existsSync as existsSync18, mkdirSync as mkdirSync8, readdirSync as readdirSync9, readFileSync as readFileSync29, rmSync as rmSync4, writeFileSync as writeFileSync2 } from "fs";
-import { basename as basename5, dirname as dirname12, isAbsolute, join as join24, relative as relative2, resolve as resolve6, sep as sep2 } from "path";
+import { basename as basename5, dirname as dirname12, isAbsolute, join as join24, resolve as resolve6 } from "path";
+function taskFolderIn(checkoutRoot, dir) {
+  const target = resolve6(checkoutRoot, dir);
+  if (!isInside(target, checkoutRoot))
+    throw new Error(OUTSIDE_CHECKOUT);
+  return target;
+}
 function deployTasksDir(checkoutRoot, settings) {
   const dir = settings.dir ?? DEFAULT_TASKS_DIR;
-  const target = resolve6(checkoutRoot, dir);
-  const rel = relative2(checkoutRoot, target);
-  if (isAbsolute(dir) || rel === ".." || rel.startsWith(`..${sep2}`))
-    throw new Error("Task folder must be inside the checkout");
-  return target;
+  if (isAbsolute(dir))
+    throw new Error(OUTSIDE_CHECKOUT);
+  return taskFolderIn(checkoutRoot, dir);
 }
 function isTaskFile(name) {
   return !name.startsWith(".") && name !== "README.md" && name.endsWith(".md");
@@ -11404,8 +11409,9 @@ function reopenDeployTask(dir, id, now, note) {
     rmSync4(task.file, { force: true });
   return saved;
 }
-var DEFAULT_TASKS_DIR = ".claude/tasks", ARCHIVE = "archive", CLAIM_ATTEMPTS = 5;
+var DEFAULT_TASKS_DIR = ".claude/tasks", OUTSIDE_CHECKOUT = "Task folder must be inside the checkout", ARCHIVE = "archive", CLAIM_ATTEMPTS = 5;
 var init_files = __esm(() => {
+  init_path_compare();
   init_write();
   init_format();
 });
@@ -11711,7 +11717,7 @@ function invalidJson(file, error) {
 function parseWorkflowText(text, file) {
   let raw;
   try {
-    raw = JSON.parse(text);
+    raw = parseUserJson(text);
   } catch (error) {
     throw invalidJson(file, error);
   }
@@ -11775,7 +11781,7 @@ function resolvePlans(paths, projectConfig) {
 }
 function statusLineIsOurs(paths) {
   try {
-    const parsed = JSON.parse(readFileSync31(paths.settingsFile, "utf8"));
+    const parsed = readUserJson(paths.settingsFile);
     if (typeof parsed !== "object" || parsed === null)
       return false;
     const statusLine = parsed.statusLine;
@@ -11928,6 +11934,7 @@ var init_resolve2 = __esm(() => {
   init_git();
   init_resolve();
   init_statusline();
+  init_user_json();
   init_state();
   init_schema();
   WorkflowConfigError = class WorkflowConfigError extends Error {
@@ -12027,16 +12034,12 @@ var init_words = __esm(() => {
 
 // src/tasks/deploy/check.ts
 import { existsSync as existsSync41, realpathSync as realpathSync7 } from "fs";
-import { basename as basename8, isAbsolute as isAbsolute3, relative as relative4, resolve as resolve10, sep as sep3 } from "path";
+import { basename as basename8, isAbsolute as isAbsolute2, resolve as resolve10 } from "path";
 function twinIsMissing(task, known) {
   return task.twin !== undefined && !known.has(task.twin);
 }
 function twinMissingFix(task, place = task.file) {
   return `remove the \`twin\` line from ${place}, or drop ${task.id} (only the person drops a blocking one) and make a new pair with \`${TASK_COMMAND} add "<title>" --kind staging --pair --deploy <${DEPLOY_STEPS.join("|")}> --type <${DEPLOY_TYPES.join("|")}>\``;
-}
-function inside(root, target) {
-  const rel = relative4(root, target);
-  return rel !== ".." && !rel.startsWith(`..${sep3}`) && !isAbsolute3(rel);
 }
 function checkDeployTasks(options) {
   const { checkoutRoot, dir, settings, now } = options;
@@ -12073,7 +12076,7 @@ function checkDeployTasks(options) {
       });
     for (const ref of task.refs ?? []) {
       const target = resolve10(checkoutRoot, ref);
-      if (isAbsolute3(ref) || !inside(resolve10(checkoutRoot), target) || !existsSync41(target) || !inside(root, realpathSync7(target)))
+      if (isAbsolute2(ref) || !isInside(target, checkoutRoot) || !existsSync41(target) || !isInside(realpathSync7(target), root))
         findings.push({
           ...common,
           kind: "broken-ref",
@@ -12105,6 +12108,7 @@ function checkDeployTasks(options) {
 }
 var DEFAULT_STALE_DAYS = 30, DAY_MS = 86400000, OLD_FILES_LISTED = 10;
 var init_check = __esm(() => {
+  init_path_compare();
   init_config();
   init_words();
   init_files();
@@ -20210,7 +20214,7 @@ init_config();
 init_resolve();
 import { createHash as createHash8 } from "crypto";
 import { existsSync as existsSync47, mkdirSync as mkdirSync20, readFileSync as readFileSync60 } from "fs";
-import { basename as basename13, dirname as dirname23, join as join55, relative as relative5 } from "path";
+import { basename as basename13, dirname as dirname23, join as join55, relative as relative3 } from "path";
 
 // src/sessions/command.ts
 import {
@@ -22085,7 +22089,7 @@ var GH_TIMEOUT_MS = 1e4;
 var runGh = async (args, { folder, env, input, timeoutMs }) => {
   try {
     const child = Bun.spawn(["gh", ...args], {
-      cwd: folder,
+      ...folder === undefined ? {} : { cwd: folder },
       env,
       stdin: input === undefined ? "ignore" : new Blob([input]),
       stdout: "pipe",
@@ -22100,7 +22104,7 @@ var runGh = async (args, { folder, env, input, timeoutMs }) => {
     ]);
     if (child.signalCode !== null) {
       const kind = child.signalCode === "SIGTERM" ? "timeout" : "failed";
-      return { code: null, err: err.trim(), kind, out };
+      return { code: null, err: err.trim(), kind, out, signal: child.signalCode };
     }
     return {
       code: child.exitCode,
@@ -23211,7 +23215,7 @@ import {
   unlinkSync as unlinkSync4
 } from "fs";
 import { dirname as dirname15, join as join32 } from "path";
-var PARSER_FINGERPRINT = "e8f36a50af9582ba2986fcdc57a830efb02c05b6c3ee3fb6e5eb73c29a6778d5";
+var PARSER_FINGERPRINT = "cf83d28a9adcc460bb6ed14ca8396360e3e093bc64ef4a44a7d36ab2374eb526";
 var CHECKED_DIR = "checked";
 var CHECKED_CACHE_LIMIT = 64;
 var CHECKED_FILE_MAX_BYTES = 256 * 1024;
@@ -29472,6 +29476,7 @@ import { existsSync as existsSync46, readFileSync as readFileSync55, statSync as
 import { join as join49, resolve as resolve13 } from "path";
 
 // src/project/deploy-skill.ts
+init_path_compare();
 init_file_mode();
 import {
   closeSync as closeSync6,
@@ -29485,7 +29490,7 @@ import {
   unlinkSync as unlinkSync5,
   writeFileSync as writeFileSync6
 } from "fs";
-import { basename as basename7, dirname as dirname20, isAbsolute as isAbsolute2, join as join42, relative as relative3, resolve as resolve9 } from "path";
+import { basename as basename7, dirname as dirname20, join as join42, relative as relative2, resolve as resolve9 } from "path";
 
 // src/setup/managed-markdown.ts
 init_write();
@@ -29584,16 +29589,12 @@ function skillsFolder(root) {
 }
 function skillsFolderLink(root) {
   const folder = skillsFolder(root);
-  if (!existsSync40(folder) || isInside2(realTarget(root), realTarget(folder)))
+  if (!existsSync40(folder) || isInside(realTarget(folder), realTarget(root)))
     return null;
   return `${shownPath(root, folder)} is a link outside this checkout: not searched`;
 }
-function isInside2(realRoot, real) {
-  const rel = relative3(realRoot, real);
-  return rel === "" || !rel.startsWith("..") && !isAbsolute2(rel);
-}
 function shownPath(root, file) {
-  return relative3(root, file).split("\\").join("/");
+  return relative2(root, file).split("\\").join("/");
 }
 function isCrlf(text) {
   return text.includes(`\r
@@ -29650,7 +29651,7 @@ function namesAny(file, words) {
   return typeof name === "string" && has(name);
 }
 function isTopSkill(top, file) {
-  return relative3(top, file).split(/[\\/]/).length === 2;
+  return relative2(top, file).split(/[\\/]/).length === 2;
 }
 function skillFilesUnder(folder, depth, realRoot, seen = new Set) {
   const real = realTarget(folder);
@@ -29660,7 +29661,7 @@ function skillFilesUnder(folder, depth, realRoot, seen = new Set) {
   const found = [];
   if (existsSync40(join42(folder, SKILL_FILE)))
     found.push(join42(folder, SKILL_FILE));
-  if (depth === 0 || !isInside2(realRoot, real))
+  if (depth === 0 || !isInside(real, realRoot))
     return found;
   for (const entry of readdirSync15(folder).sort()) {
     if (entry !== "node_modules") {
@@ -29719,7 +29720,7 @@ function linesOnlyIn(from, other) {
 function planDeploySkill(root, file, mode) {
   const shown = shownPath(root, file);
   const real = realTarget(file);
-  if (!isInside2(realTarget(root), real)) {
+  if (!isInside(real, realTarget(root))) {
     return refused(root, file, outsideMessage(root, file, real));
   }
   if (!existsSync40(real) || !statSync17(real).isFile()) {
@@ -30341,31 +30342,16 @@ function baseBranch(checkout, env, repo) {
 // src/cli/project-init.ts
 init_paths2();
 var RUN_TIMEOUT_MS2 = 1e4;
-async function runGh2(ghPath, args, env) {
-  try {
-    const child = Bun.spawn([ghPath, ...args], {
-      env,
-      stdin: "ignore",
-      stdout: "pipe",
-      stderr: "pipe",
-      timeout: RUN_TIMEOUT_MS2
-    });
-    const [out, err, code] = await Promise.all([
-      new Response(child.stdout).text(),
-      new Response(child.stderr).text(),
-      child.exited
-    ]);
-    return { ok: code === 0, out, err };
-  } catch (error) {
-    return { ok: false, out: "", err: error instanceof Error ? error.message : "" };
-  }
+function realGh(env) {
+  if (ghMissing(env))
+    return null;
+  return async (args) => {
+    const { kind, out, err } = await runGh(args, { env, timeoutMs: RUN_TIMEOUT_MS2 });
+    return { ok: kind === "ok", out, err };
+  };
 }
 function realRunnerAsync(env) {
-  const ghPath = Bun.which("gh", { PATH: env.PATH ?? "" });
-  return {
-    git: (cwd, args) => runGitAsync(cwd, args, env, RUN_TIMEOUT_MS2),
-    gh: ghPath === null ? null : (args) => runGh2(ghPath, args, env)
-  };
+  return { git: (cwd, args) => runGitAsync(cwd, args, env, RUN_TIMEOUT_MS2), gh: realGh(env) };
 }
 async function currentBranchOf(runner, root) {
   const head = await runner.git(root, ["symbolic-ref", "--quiet", "--short", "HEAD"]);
@@ -32401,8 +32387,8 @@ async function uncommittedProject(root, env) {
     "status",
     "--porcelain",
     "--",
-    relative5(root, files.config),
-    relative5(root, files.settings)
+    relative3(root, files.config),
+    relative3(root, files.settings)
   ], env);
   return status.ok ? status.out !== "" : null;
 }
@@ -32802,7 +32788,7 @@ import {
   statSync as statSync21,
   writeFileSync as writeFileSync8
 } from "fs";
-import { basename as basename14, dirname as dirname24, join as join56, relative as relative6, sep as sep4 } from "path";
+import { basename as basename14, dirname as dirname24, join as join56, relative as relative4, sep as sep2 } from "path";
 var OWNED_FOLDERS_FILE = "owned-folders.json";
 var FILE_MODE = 420;
 var DIR_MODE = 493;
@@ -32812,7 +32798,7 @@ function markedOwned(folder) {
   return existsSync48(join56(folder, OWNED_FOLDER_MARK));
 }
 function listFiles(folder) {
-  return readdirSync18(folder, { recursive: true, withFileTypes: true }).filter((entry) => entry.isFile()).map((entry) => relative6(folder, join56(entry.parentPath, entry.name)).split(sep4).join("/")).sort();
+  return readdirSync18(folder, { recursive: true, withFileTypes: true }).filter((entry) => entry.isFile()).map((entry) => relative4(folder, join56(entry.parentPath, entry.name)).split(sep2).join("/")).sort();
 }
 function contentOfFolder(source) {
   return {
@@ -33426,7 +33412,7 @@ import { basename as basename15, dirname as dirname25, join as join60, resolve a
 
 // src/jobs/classify.ts
 init_command();
-import { isAbsolute as isAbsolute4, join as join59, normalize } from "path";
+import { isAbsolute as isAbsolute3, join as join59, normalize } from "path";
 
 // src/shell/tool.ts
 var BUN_VALUED = ["--config", "--cwd", "--env-file", "--filter", "--preload", "-c", "-F", "-r"];
@@ -33712,7 +33698,7 @@ function folderWord(args) {
 function resolveFolder(folder, target) {
   if (target === undefined || target === "-" || COMPUTED_FOLDER.test(target))
     return null;
-  if (isAbsolute4(target))
+  if (isAbsolute3(target))
     return normalize(target);
   return folder === null ? null : normalize(join59(folder, target));
 }
@@ -35273,7 +35259,7 @@ init_installed_plugins();
 
 // src/setup/instructions.ts
 import { existsSync as existsSync55, readdirSync as readdirSync20, readFileSync as readFileSync67, rmSync as rmSync14 } from "fs";
-import { join as join64, relative as relative7, sep as sep5 } from "path";
+import { join as join64, relative as relative5, sep as sep3 } from "path";
 init_path_compare();
 init_installed_plugins();
 init_lock();
@@ -35511,7 +35497,7 @@ function listInstructionFiles(source) {
   if (!existsSync55(source)) {
     throw new Error(`The plugin's instructions folder is missing: ${source}. Reinstall the plugin.`);
   }
-  const files = readdirSync20(source, { recursive: true, withFileTypes: true }).filter((entry) => entry.isFile() && entry.name.endsWith(".md")).map((entry) => relative7(source, join64(entry.parentPath, entry.name)).split(sep5).join("/")).sort();
+  const files = readdirSync20(source, { recursive: true, withFileTypes: true }).filter((entry) => entry.isFile() && entry.name.endsWith(".md")).map((entry) => relative5(source, join64(entry.parentPath, entry.name)).split(sep3).join("/")).sort();
   if (!files.includes(ALWAYS_ON_FILE)) {
     throw new Error(`The plugin's instructions folder has no ${ALWAYS_ON_FILE}: ${source}. Reinstall the plugin.`);
   }
@@ -35548,7 +35534,7 @@ function copyDifferences(paths) {
   const wanted = new Set(files.map((name) => realTarget(join64(paths.target, name))));
   for (const file of trackedCopies(paths.target, paths.stateDir)) {
     if (!wanted.has(file) && existsSync55(file)) {
-      out.push(`${relative7(root, file).split(sep5).join("/")} is not shipped any more`);
+      out.push(`${relative5(root, file).split(sep3).join("/")} is not shipped any more`);
     }
   }
   return out;
@@ -35844,7 +35830,7 @@ import {
   realpathSync as realpathSync10,
   statSync as statSync25
 } from "fs";
-import { isAbsolute as isAbsolute6, join as join73, relative as relative8, resolve as resolve18, sep as sep6 } from "path";
+import { isAbsolute as isAbsolute5, join as join73, relative as relative6, resolve as resolve18 } from "path";
 
 // src/hooks/after-merge.ts
 init_names();
@@ -39278,7 +39264,7 @@ init_path_compare();
 init_locate();
 init_command();
 init_git();
-import { extname, isAbsolute as isAbsolute5, resolve as resolve17 } from "path";
+import { extname, isAbsolute as isAbsolute4, resolve as resolve17 } from "path";
 
 // src/hooks/plans-folders.ts
 init_paths2();
@@ -39457,9 +39443,9 @@ function verifyGateWouldBlock(input, config, env, real = realPath) {
   const seen = seenIn(lines, check, (block, editCwd) => {
     const fields = objectOf(block.input);
     const path = stringField(block.name === "NotebookEdit" ? fields?.notebook_path : fields?.file_path);
-    if (path === null || path.trim() === "" || path.includes("\x00") || !isAbsolute5(path) && (editCwd === null || !isAbsolute5(editCwd)))
+    if (path === null || path.trim() === "" || path.includes("\x00") || !isAbsolute4(path) && (editCwd === null || !isAbsolute4(editCwd)))
       return true;
-    const file = real(isAbsolute5(path) ? resolve17(path) : resolve17(editCwd ?? cwd, path));
+    const file = real(isAbsolute4(path) ? resolve17(path) : resolve17(editCwd ?? cwd, path));
     return isInsideOnDisk(file, root) && ![".md", ".mdx"].includes(extname(file).toLowerCase()) && !excluded.some((folder) => isInsideOnDisk(file, folder));
   });
   return seen.lastEdit > Math.max(seen.lastCheck, seen.lastReminder);
@@ -39698,6 +39684,7 @@ async function issuesChecks(world) {
 
 // src/cli/project-checks.ts
 init_kinds();
+init_path_compare();
 init_config();
 init_resolve();
 init_managed_json();
@@ -40178,7 +40165,7 @@ function lintRestriction(folder, projectFolder) {
         const pkg = parseUserJson(text);
         result.restricted ||= isObject2(pkg) && eslintRestriction(JSON.stringify(pkg.eslintConfig) ?? "");
       } else {
-        const path = relative8(folder, projectFolder).replaceAll("\\", "/");
+        const path = relative6(folder, projectFolder).replaceAll("\\", "/");
         result.restricted ||= biome ? biomeRestriction(parseLintJson(text), path === "" ? "" : `${path}/`) : eslintRestriction(text);
       }
     } catch {
@@ -40193,8 +40180,7 @@ function shadcnFolders(root) {
   const addFolder = (folder) => {
     try {
       const target = realpathSync10(folder);
-      const rel = relative8(realpathSync10(root), target);
-      if (rel === ".." || rel.startsWith(`..${sep6}`) || isAbsolute6(rel))
+      if (!isInside(target, realpathSync10(root)))
         return;
       if (statSync25(folder).isDirectory() && !folders.has(target))
         folders.set(target, folder);
@@ -40207,18 +40193,15 @@ function shadcnFolders(root) {
       const workspaces = isObject2(pkg) ? pkg.workspaces : null;
       const entries = Array.isArray(workspaces) ? workspaces : isObject2(workspaces) && Array.isArray(workspaces.packages) ? workspaces.packages : [];
       for (const entry of entries) {
-        if (typeof entry !== "string" || isAbsolute6(entry))
+        if (typeof entry !== "string" || isAbsolute5(entry))
           continue;
         const folder = resolve18(root, entry.replace(/\/\*$/, ""));
-        const rel = relative8(root, folder);
-        if (rel === ".." || rel.startsWith(`..${sep6}`) || isAbsolute6(rel))
+        if (!isInside(folder, root))
           continue;
         if (entry.endsWith("/*") && !entry.slice(0, -2).includes("*")) {
           if (!existsSync63(folder))
             continue;
-          const realFolder = realpathSync10(folder);
-          const realRel = relative8(realpathSync10(root), realFolder);
-          if (realRel === ".." || realRel.startsWith(`..${sep6}`) || isAbsolute6(realRel))
+          if (!isInside(realpathSync10(folder), realpathSync10(root)))
             continue;
           for (const child of readdirSync21(folder).sort())
             addFolder(join73(folder, child));
@@ -40247,7 +40230,7 @@ function shadcnLintLines(root) {
     const local = folder === root ? rootLint : lintRestriction(folder, folder);
     if (rootLint.restricted || local.restricted)
       continue;
-    const label = relative8(root, folder).replaceAll("\\", "/") || ".";
+    const label = relative6(root, folder).replaceAll("\\", "/") || ".";
     const unreadable = [...new Set([...rootLint.unreadable, ...local.unreadable])];
     if (unreadable.length > 0) {
       lines.push({
@@ -41827,7 +41810,7 @@ function jobsFingerprint(home) {
 // src/portal/actions.ts
 import { createHash as createHash12 } from "crypto";
 import { existsSync as existsSync67, statSync as statSync29 } from "fs";
-import { isAbsolute as isAbsolute8, join as join80 } from "path";
+import { isAbsolute as isAbsolute7, join as join80 } from "path";
 init_build_info();
 init_paths2();
 
@@ -42690,13 +42673,13 @@ init_managed_json();
 
 // src/tasks/ops.ts
 import { existsSync as existsSync66, readFileSync as readFileSync77, rmSync as rmSync17, statSync as statSync28 } from "fs";
-import { join as join79, relative as relative9 } from "path";
+import { join as join79, relative as relative7 } from "path";
 
 // src/tasks/schemas.ts
 init_zod();
 init_format();
 init_words();
-import { isAbsolute as isAbsolute7 } from "path";
+import { isAbsolute as isAbsolute6 } from "path";
 var fields = deployTaskSchema.shape;
 var subject = string2().trim().min(1).max(SUBJECT_LIMIT);
 var description = string2().max(DESCRIPTION_LIMIT);
@@ -42709,7 +42692,7 @@ var stackedOn = string2().trim().min(1);
 var bindings = {
   agent: string2().describe("The builder subagent's name or id.").optional(),
   branch: string2().describe("The builder's git branch.").optional(),
-  worktree: string2().refine(isAbsolute7, "worktree must be an absolute path").describe("The builder's absolute worktree path.").optional(),
+  worktree: string2().refine(isAbsolute6, "worktree must be an absolute path").describe("The builder's absolute worktree path.").optional(),
   base: string2().describe("The commit the builder started from: any name git reads, a full or a short sha (a short one is not refused). A phase started with a base warns when the default branch changed the plan's files since its brief was written.").optional()
 };
 var deployFields = {
@@ -42745,7 +42728,7 @@ var taskSchemas = {
     ...bindings,
     subject: subject.optional(),
     description: description.optional(),
-    status: _enum(["pending", "in_progress", "done", "dropped", "open"]).optional().describe("open reopens a closed deploy task (a deploy that was rolled back); a work task has pending and in_progress. Close a task with task_done."),
+    status: _enum(["pending", "in_progress", "done", "dropped", "open"]).optional().describe(`open reopens a closed deploy task (a deploy that was rolled back); a work task has pending and in_progress. Close a task with ${TASK_TOOL.done}.`),
     parent: ref.nullable().optional(),
     type: type.optional(),
     blocked_by_add: blockedBy.optional(),
@@ -42924,7 +42907,7 @@ function blockMessage(refusal, task, other) {
 }
 function openPlanValid(tasks, plan) {
   if (!planIsOpen(tasks, plan))
-    throw new Error(`Plan "${plan}" is closed: reopen it with task_update, or create a loose task (no plan).`);
+    throw new Error(`Plan "${plan}" is closed: reopen it with ${TASK_TOOL.update}, or create a loose task (no plan).`);
 }
 function storeFiles(db, task, files) {
   if (task.kind !== "plan")
@@ -43485,6 +43468,7 @@ function warnOverlaps(db, found, check, who, now) {
 }
 
 // src/tasks/plan-guards.ts
+init_git();
 init_words();
 init_queries();
 function reservedAgainstCaller(options) {
@@ -43612,7 +43596,7 @@ function staleBriefWarning(check) {
   if (writtenAt === null || files.length === 0)
     return null;
   const ref = `refs/remotes/origin/${base}`;
-  const known = git(["rev-parse", "--verify", "--quiet", `${ref}^{commit}`]);
+  const known = git(commitArgs(ref));
   if (!known.ok && known.code === 1)
     return null;
   const since = new Date(Math.floor(writtenAt / 1000) * 1000).toISOString();
@@ -43654,32 +43638,21 @@ function staleBriefWarning(check) {
 }
 
 // src/tasks/stack-proof.ts
+init_git();
 init_queries();
 var gap = (why) => ({ proved: false, gap: why });
 function branchTip(git, branch) {
   for (const ref of [`refs/heads/${branch}`, `refs/remotes/origin/${branch}`]) {
-    const run = git(["rev-parse", "--verify", "--quiet", `${ref}^{commit}`]);
-    if (run.ok && run.out !== "")
-      return run.out;
+    const commit = commitIn(git(commitArgs(ref)));
+    if (commit !== null)
+      return commit;
   }
   return null;
 }
 function defaultTip(git, defaultBranch) {
   if (defaultBranch === null)
     return null;
-  const run = git([
-    "rev-parse",
-    "--verify",
-    "--quiet",
-    `refs/remotes/origin/${defaultBranch}^{commit}`
-  ]);
-  return run.ok && run.out !== "" ? run.out : null;
-}
-function commitOf(git, name) {
-  if (name.startsWith("-"))
-    return null;
-  const run = git(["rev-parse", "--verify", "--quiet", `${name}^{commit}`]);
-  return run.ok && run.out !== "" ? run.out : null;
+  return commitIn(git(commitArgs(`refs/remotes/origin/${defaultBranch}`)));
 }
 function isAncestor(git, commit, tip) {
   const run = git(["merge-base", "--is-ancestor", commit, tip]);
@@ -43700,7 +43673,7 @@ function stackHolds(git, onDefault, { parent, child, grandparent, start, given }
     return gap("git");
   if (empty)
     return gap("parent-empty");
-  const parentStart = parent.base === null ? null : commitOf(git, parent.base);
+  const parentStart = parent.base === null ? null : commitIn(git(commitArgs(parent.base)));
   if (parentStart === null)
     return gap("parent-base");
   const fences = [onDefault];
@@ -43710,7 +43683,7 @@ function stackHolds(git, onDefault, { parent, child, grandparent, start, given }
       return gap("chain-branch");
     fences.push(chain);
   }
-  const from = start === null ? null : commitOf(git, start);
+  const from = start === null ? null : commitIn(git(commitArgs(start)));
   if (from === null)
     return gap("no-start");
   if (!given && child.branch === null)
@@ -43824,7 +43797,7 @@ function personOnly(id, action, command) {
   return `${id} is blocking: only the person ${action}. Ask the person to run \`${TASK_COMMAND} ${command}\` in their own terminal, outside Claude Code`;
 }
 function deployWrote(root, file) {
-  return `${relative9(root, file)} \xB7 written in ${root}: commit the file with your branch`;
+  return `${relative7(root, file)} \xB7 written in ${root}: commit the file with your branch`;
 }
 function deployTasksIn(root) {
   return `Deploy tasks in ${root}:`;
@@ -43834,7 +43807,7 @@ function isFolderOnDisk(root, path) {
   return existsSync66(full) && statSync28(full).isDirectory();
 }
 var DEPLOY_NOT_READ = "Deploy tasks were not read.";
-var DELETE_TRACKED = "Tracked deploy task: it is part of a commit, so close it with task_done instead";
+var DELETE_TRACKED = `Tracked deploy task: it is part of a commit, so close it with ${TASK_TOOL.done} instead`;
 var TASK_LINE_CAP = 200;
 var TASK_TEXT_CAP = 20000;
 function value(result) {
@@ -44117,9 +44090,9 @@ function createTaskOps(options = {}) {
         const blockedBy = input.blocked_by?.map((r) => work(r).id) ?? [];
         const notPlanTask = input.phase !== undefined || input.plan === undefined || input.parent !== undefined;
         if (input.files !== undefined && notPlanTask)
-          throw new Error("files belong to a plan task: create the plan with plan and a subject (no phase, no parent), or set files on it with task_update");
+          throw new Error(`files belong to a plan task: create the plan with plan and a subject (no phase, no parent), or set files on it with ${TASK_TOOL.update}`);
         if (input.stacked_on !== undefined && notPlanTask)
-          throw new Error("stacked_on belongs to a plan task: create the plan with plan and a subject (no phase, no parent), or set it with task_update");
+          throw new Error(`stacked_on belongs to a plan task: create the plan with plan and a subject (no phase, no parent), or set it with ${TASK_TOOL.update}`);
         if (input.phase !== undefined || input.plan !== undefined && input.parent === undefined) {
           if (input.parent !== undefined)
             throw new Error("A plan stays at the top and a phase under its plan: leave out parent");
@@ -44368,7 +44341,7 @@ History: not committed yet.`;
             "--date=iso-strict",
             "--format=%ad %an %h %s",
             "--",
-            relative9(root, file)
+            relative7(root, file)
           ], env);
           const history = !log.ok ? `History: git could not read it (${log.err})` : log.out ? `History (git, oldest first):
 ${log.out.split(`
@@ -44421,10 +44394,10 @@ ${historyText(gone, { full: input.history })}`;
           const guarded = options.refuseBlockingDrop && task.status === "open" && task.type === "blocking";
           const trackedRefusal = guarded ? personOnly(task.id, "drops a blocking deploy task", `drop ${task.id} --note "<reason>"`) : DELETE_TRACKED;
           const root = deployRoot();
-          const tracked = runGit(root, ["ls-files", "--error-unmatch", "--", relative9(root, task.file)], env);
+          const tracked = runGit(root, ["ls-files", "--error-unmatch", "--", relative7(root, task.file)], env);
           if (tracked.ok)
             throw new Error(trackedRefusal);
-          const index = runGit(root, ["ls-files", "--", relative9(root, task.file)], env);
+          const index = runGit(root, ["ls-files", "--", relative7(root, task.file)], env);
           if (!index.ok)
             throw new Error(`Could not read git's index: ${index.err}`);
           if (index.out)
@@ -44434,7 +44407,7 @@ ${historyText(gone, { full: input.history })}`;
           rmSync17(task.file);
           return {
             ok: true,
-            text: `${input.task} \xB7 deleted \xB7 ${relative9(root, task.file)} \xB7 removed from ${root}`
+            text: `${input.task} \xB7 deleted \xB7 ${relative7(root, task.file)} \xB7 removed from ${root}`
           };
         }
         const result = deleteTask(store, work(input.task).id, who, now);
@@ -45304,7 +45277,7 @@ async function projectAdd(action, body) {
   if (folder === "") {
     return { lines: ["Type the folder to add, with its full path."], ok: false };
   }
-  if (!isAbsolute8(folder)) {
+  if (!isAbsolute7(folder)) {
     return {
       lines: [`"${folder}" is not an absolute path: give the folder's full path.`],
       ok: false
@@ -46252,7 +46225,7 @@ init_files();
 init_format();
 init_queries();
 init_read();
-import { relative as relative10 } from "path";
+import { relative as relative8 } from "path";
 
 // src/tasks/work/tree.ts
 init_identity();
@@ -46417,7 +46390,7 @@ function rowOf2(task, root, stale, statuses) {
     created: task.created,
     deploy: task.deploy,
     env: task.env,
-    file: relative10(root, task.file),
+    file: relative8(root, task.file),
     flags: [...task.flags ?? []],
     id: task.id,
     stale: stale.has(task.file),
@@ -46443,7 +46416,7 @@ function filesOf(root, tasks, now) {
     return {
       broken: scan.broken.length,
       closed: scan.tasks.length - open.length,
-      dir: relative10(root, tasks.dir),
+      dir: relative8(root, tasks.dir),
       duplicateIds: scan.duplicates.map((duplicate) => duplicate.id).sort(),
       envs: DEPLOY_ENVS.filter((env) => tasks.envs.includes(env)),
       old: oldTaskFiles(tasks.dir).length,
@@ -48254,7 +48227,7 @@ function createLiveSources(deps) {
 
 // src/portal/static.ts
 import { existsSync as existsSync68, readFileSync as readFileSync79, statSync as statSync31 } from "fs";
-import { extname as extname2, join as join81, resolve as resolve19, sep as sep7 } from "path";
+import { extname as extname2, join as join81, resolve as resolve19, sep as sep4 } from "path";
 var TYPES = {
   ".css": "text/css; charset=utf-8",
   ".html": "text/html; charset=utf-8",
@@ -48284,7 +48257,7 @@ function fileInside(folder, pathname) {
   if (decoded.includes("\x00") || decoded.includes("\\"))
     return null;
   const file = resolve19(join81(folder, decoded));
-  if (file !== folder && !file.startsWith(`${folder}${sep7}`))
+  if (file !== folder && !file.startsWith(`${folder}${sep4}`))
     return null;
   try {
     return statSync31(file).isFile() ? file : null;
@@ -48368,7 +48341,7 @@ function exportServer(source) {
         return null;
       const file = fileInside(source.folder, pathname.slice(1));
       const build = resolve19(source.folder, "_next", "static");
-      return file?.startsWith(`${build}${sep7}`) === true ? file : null;
+      return file?.startsWith(`${build}${sep4}`) === true ? file : null;
     }
   };
 }

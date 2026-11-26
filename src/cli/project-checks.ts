@@ -57,7 +57,7 @@ import {
   realpathSync,
   statSync,
 } from "node:fs";
-import { isAbsolute, join, relative, resolve, sep } from "node:path";
+import { isAbsolute, join, relative, resolve } from "node:path";
 import { COMMAND, PLUGIN_UPDATE_COMMAND } from "../build-info";
 import { PLUGIN } from "../build-info/names";
 import { runGitAsync } from "../hooks/git";
@@ -71,6 +71,7 @@ import {
 import { MACHINE_WIDE_HOOKS } from "../hooks/specs";
 import { issuesChecks } from "../issues/doctor";
 import { ignoredFieldsOf } from "../jobs/kinds";
+import { isInside } from "../path-compare";
 import {
   type CcSmartDevKitConfig,
   CcSmartDevKitConfigError,
@@ -847,8 +848,7 @@ function shadcnFolders(root: string): { folders: string[]; lines: ProjectLine[] 
   const addFolder = (folder: string) => {
     try {
       const target = realpathSync(folder);
-      const rel = relative(realpathSync(root), target);
-      if (rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel)) return;
+      if (!isInside(target, realpathSync(root))) return;
       if (statSync(folder).isDirectory() && !folders.has(target)) folders.set(target, folder);
     } catch {
       // A broken symlink or a disappearing workspace is not a project doctor can check.
@@ -867,13 +867,10 @@ function shadcnFolders(root: string): { folders: string[]; lines: ProjectLine[] 
       for (const entry of entries) {
         if (typeof entry !== "string" || isAbsolute(entry)) continue;
         const folder = resolve(root, entry.replace(/\/\*$/, ""));
-        const rel = relative(root, folder);
-        if (rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel)) continue;
+        if (!isInside(folder, root)) continue;
         if (entry.endsWith("/*") && !entry.slice(0, -2).includes("*")) {
           if (!existsSync(folder)) continue;
-          const realFolder = realpathSync(folder);
-          const realRel = relative(realpathSync(root), realFolder);
-          if (realRel === ".." || realRel.startsWith(`..${sep}`) || isAbsolute(realRel)) continue;
+          if (!isInside(realpathSync(folder), realpathSync(root))) continue;
           for (const child of readdirSync(folder).sort()) addFolder(join(folder, child));
         } else if (!entry.includes("*")) addFolder(folder);
       }

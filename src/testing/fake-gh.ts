@@ -1,6 +1,6 @@
 /**
- * A fake GitHub for the tests of `issue file` and `doctor`: a `GhExec` (the one place the kit
- * starts `gh`) that answers from memory and records every call, so a test asserts the exact
+ * A fake GitHub for the tests of `issue file` and `doctor`: a `GhExec` (the kit's one awaited
+ * `gh` runner) that answers from memory and records every call, so a test asserts the exact
  * arguments and that nothing reached GitHub. `mode` makes every call fail the way a missing
  * `gh`, a logged-out one or a timeout does.
  */

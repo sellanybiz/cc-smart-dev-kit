@@ -1,3 +1,4 @@
+import { commitArgs } from "../hooks/git";
 import {
   type CcSmartDevKitConfig,
   loadCcSmartDevKitConfig,
@@ -138,7 +139,7 @@ function withoutText(read: CommittedFile): CommittedConfig {
 function readTarget(branch: string, options: CommittedOptions) {
   const ref = `origin/${branch}`;
   const at = options.commit ?? `refs/remotes/${ref}`;
-  return { at: `${at}^{commit}`, ref, where: `${ref}:${CONFIG_PATH}` };
+  return { at, ref, where: `${ref}:${CONFIG_PATH}` };
 }
 
 /**
@@ -176,7 +177,7 @@ export function readCommittedFile(
     options.timeoutMs,
     options.timeFor,
   );
-  const commit = git(["rev-parse", "--verify", "--quiet", at]);
+  const commit = git(commitArgs(at));
   if (!commit.ok) return refNotKnown(where, ref, commit);
   const blob = git(["rev-parse", "--verify", "--quiet", `${commit.stdout.trim()}:${CONFIG_PATH}`]);
   if (!blob.ok) return noCommittedFile(where, ref, blob);
@@ -202,7 +203,7 @@ export async function readCommittedConfigAsync(
     options.timeoutMs,
     options.timeFor,
   );
-  const commit = await git(["rev-parse", "--verify", "--quiet", at]);
+  const commit = await git(commitArgs(at));
   if (!commit.ok) return refNotKnown(where, ref, commit);
   const blob = await git([
     "rev-parse",

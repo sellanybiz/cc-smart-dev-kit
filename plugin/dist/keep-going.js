@@ -481,7 +481,7 @@ import { dirname as dirname3, join as join6 } from "path";
 
 // src/build-info/index.ts
 var info = {
-  version: "6.7.0",
+  version: "6.7.1",
   repo: "sellanybiz/cc-smart-dev-kit",
   dependencies: [
     {
@@ -503,7 +503,7 @@ var PLUGIN_INSTALL_COMMAND = `claude plugin install ${PLUGIN_ID}`;
 var PLUGIN_UPDATE_COMMAND = `claude plugin update ${PLUGIN_ID}`;
 
 // src/hooks/checked-config.ts
-var PARSER_FINGERPRINT = "e8f36a50af9582ba2986fcdc57a830efb02c05b6c3ee3fb6e5eb73c29a6778d5";
+var PARSER_FINGERPRINT = "cf83d28a9adcc460bb6ed14ca8396360e3e093bc64ef4a44a7d36ab2374eb526";
 var CHECKED_DIR = "checked";
 var CHECKED_CACHE_LIMIT = 64;
 var CHECKED_FILE_MAX_BYTES = 256 * 1024;
@@ -8463,13 +8463,16 @@ var ccSmartDevKitConfigSchema = strictObject({
   workflow: workflowSchema.optional(),
   ownHooks: array(_enum([...PLUGIN_HOOK_NAMES, ...RETIRED_HOOK_NAMES, ...UNSWITCHABLE_HOOK_NAMES])).optional()
 });
+
+// src/path-compare.ts
+var IGNORE_CASE = process.platform === "win32";
+
 // src/workflow/reviews.ts
 import { createHash as createHash2 } from "crypto";
 var START_KEPT_MS = 24 * 60 * 60 * 1000;
 function repoKey(repo) {
   return createHash2("sha256").update(repo).digest("hex").slice(0, 16);
 }
-
 // src/mcp/task-server-name.ts
 var TASKS_SERVER_NAME = `${COMMAND}-tasks`;
 
@@ -8629,10 +8632,6 @@ function liveSessions(claudeConfigDir, facts = {}) {
 // src/worktrees/machine-facts.ts
 import { readdirSync as readdirSync4, readFileSync as readFileSync7, readlinkSync as readlinkSync2 } from "fs";
 import { platform } from "os";
-
-// src/path-compare.ts
-var IGNORE_CASE = process.platform === "win32";
-// src/worktrees/machine-facts.ts
 var PROGRAMS_TIMEOUT_MS = 15000;
 var PS_PROGRAMS_ARGV = ["ps", "-ww", "-axo", "pid=,ppid=,args="];
 function spawnPrograms(argv) {
