@@ -63,15 +63,15 @@ export const MAX_PHASE = 8;
 export const PHASE_RULE = `1-${MAX_PHASE} characters: ASCII letters, digits, ".", "_" and "-", a letter or a digit at each end, never "--"`;
 
 /**
- * What a plan's file list is, said once for the tool schemas, the command's help and the
- * server's instructions: the list the store checks before it reserves a plan for a child.
+ * What a plan's file list is, said once for the tool schemas and the command's help: the list
+ * the store compares with the held plans' lists when a plan starts or is reserved for a child.
  */
 export const PLAN_FILES_WORDS =
-  "Plan task only: the repo-relative paths the plan changes, with / separators; a folder ends in /. Two plans overlap when a path is equal or inside the other's folder (inside a plans.appendOnly folder, only the same file); a plan that overlaps a reserved or running plan is not handed out. The list replaces the stored one; an empty list clears it.";
+  "Plan task only: the repo-relative paths the plan changes, with / separators; a folder ends in /. Two plans overlap when a path is equal or inside the other's folder (inside a plans.appendOnly folder, only the same file). An overlap with a reserved or running plan never refuses: the answer warns, and both plans get an Overlap: note. The list replaces the stored one; an empty list clears it.";
 
 /**
  * What a plan's `stacked_on` is, said once for the tool schemas and the command's help: the
- * plan it is built on, which the overlap check then skips once proved (`isStackedPair`).
+ * plan it is built on, which the overlap warning then skips once proved (`isStackedPair`).
  */
 export const STACKED_ON_WORDS =
-  "Plan task only: the slug of your own plan this plan is built on. The overlap check skips that one plan, both ways, while it holds its files (open, or done and reserved until its pull request merges), one lead leads both, and this plan is built on its work: that plan records its branch and base, its branch has commits past the default branch and past that base, and this plan's start (its herdr start base, or its base with its own branch recorded) holds some of them and is on this plan's own branch; every other plan still blocks. Never itself, a missing plan, another lead's plan or a loop; null clears it.";
+  "Plan task only: the slug of your own plan this plan is built on. The overlap warning skips that one plan, both ways, while it holds its files (open, or done and reserved until its pull request merges), one lead leads both, and this plan is built on its work: that plan records its branch and base, its branch has commits past the default branch and past that base, and this plan's start (its herdr start base, or its base with its own branch recorded) holds some of them and is on this plan's own branch; every other plan is still warned about. Never itself, a missing plan, another lead's plan or a loop; null clears it.";
