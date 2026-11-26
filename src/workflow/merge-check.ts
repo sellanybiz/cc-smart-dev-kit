@@ -79,12 +79,21 @@ export interface GhResult {
   kind: "failed" | "missing" | "ok" | "timeout";
   /** stdout, as gh printed it. */
   out: string;
+  /**
+   * The signal that ended gh, when one did (its number when it has no name): SIGTERM for a
+   * timeout, another for gh dying. Left out when gh exited or never started. A caller whose
+   * call may have acted before the end (`workflow propose`'s `gh pr create`) tells a signal
+   * from a spawn that failed by it.
+   */
+  signal?: NodeJS.Signals | number;
 }
 
 /**
- * One `gh` call, awaited, with how it ended told apart. The one place the kit starts `gh`:
- * a timeout, no console window on Windows, no blocking spawn (`spawnGh` reads through it, and
- * so does `issue file`, which must tell a missing gh from a timeout from a refusal).
+ * One `gh` call, awaited, with how it ended told apart: a timeout, no console window on
+ * Windows, no blocking spawn. Every awaited `gh` call of the kit starts through it: `spawnGh`,
+ * `issue file` (which must tell a missing gh from a timeout from a refusal), `workflow
+ * propose`'s `gh pr create` and `project init`'s runners. A few blocking reads in hooks and the
+ * worktree scan still spawn `gh` themselves.
  */
 export type GhExec = (args: string[], call: GhCall) => Promise<GhResult>;
 
@@ -109,7 +118,7 @@ export const runGh: GhExec = async (args, { folder, env, input, timeoutMs }) => 
     if (child.signalCode !== null) {
       // The time limit stops the child with SIGTERM; any other signal is gh dying, not time.
       const kind = child.signalCode === "SIGTERM" ? "timeout" : "failed";
-      return { code: null, err: err.trim(), kind, out };
+      return { code: null, err: err.trim(), kind, out, signal: child.signalCode };
     }
     return {
       code: child.exitCode,

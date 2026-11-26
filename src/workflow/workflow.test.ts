@@ -14,6 +14,7 @@ import { autoMergeAllowed, autoMergeOff, autoMergeRefusal, baseRefusal } from ".
 import {
   jobRouteFrom,
   leadHintFrom,
+  loadWorkflow,
   resolveJobRoute,
   resolveLeadHint,
   resolvePlanFiles,
@@ -366,6 +367,15 @@ describe("resolveWorkflow: the order", () => {
     writeFileSync(paths.workflowConfigFile, "{not json");
     expect(() => resolveWorkflow(paths, null)).toThrow(/not valid JSON/);
   });
+
+  test("a personal file saved with a byte order mark loads, as Notepad on Windows saves it", () => {
+    const env = hookEnv();
+    const paths = pathsFor(env);
+    mkdirSync(dirname(paths.workflowConfigFile), { recursive: true });
+    writeFileSync(paths.workflowConfigFile, `\u{FEFF}${JSON.stringify({ allowCommit: true })}\n`);
+    expect(loadWorkflow(paths.workflowConfigFile)).toEqual({ allowCommit: true });
+    expect(resolveWorkflow(paths, null).allowCommit).toEqual({ value: true, source: "personal" });
+  });
 });
 
 describe("the switches: the setting that already exists", () => {
@@ -395,6 +405,15 @@ describe("the switches: the setting that already exists", () => {
       source: "default",
     });
     writeSettings(env, { statusLine: statuslineSetting(paths) });
+    expect(resolveWorkflow(paths, null).switches.statusLine).toEqual({
+      value: true,
+      source: "personal",
+    });
+    // A settings.json saved with a byte order mark: Claude Code reads it, so the switch is on.
+    writeFileSync(
+      paths.settingsFile,
+      `\u{FEFF}${JSON.stringify({ statusLine: statuslineSetting(paths) })}\n`,
+    );
     expect(resolveWorkflow(paths, null).switches.statusLine).toEqual({
       value: true,
       source: "personal",

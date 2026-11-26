@@ -114,7 +114,14 @@ function failingHook(repo: string, name: string): void {
 function world(
   options: {
     file?: "committed" | "local";
-    gh?: "create-fails" | "create-hangs" | "create-no-url" | "in" | "missing" | "out";
+    gh?:
+      | "create-fails"
+      | "create-hangs"
+      | "create-killed"
+      | "create-no-url"
+      | "in"
+      | "missing"
+      | "out";
     race?: Race;
   } = {},
 ): World {
@@ -202,13 +209,18 @@ ${answers}
   };
 }
 
-/** What the fake `gh` does for `pr create`: it answers, is refused, or never answers in time. */
+/**
+ * What the fake `gh` does for `pr create`: it answers, is refused, never answers in time, or is
+ * killed by a signal before it answers.
+ */
 function prAnswer(mode: string | undefined): string {
   if (mode === "create-fails") {
-    return 'echo "a pull request already exists for this branch" >&2; exit 1';
+    // Two lines: the refusal names only the last one.
+    return 'echo "Warning: 1 uncommitted change" >&2; echo "a pull request already exists for this branch" >&2; exit 1';
   }
   // `exec`: the sleep is the process the timeout ends, so no child holds the pipes open.
   if (mode === "create-hangs") return "exec sleep 5";
+  if (mode === "create-killed") return "kill -9 $$";
   // gh answers, but with no pull request URL in it.
   if (mode === "create-no-url") return "echo created; exit 0";
   return 'echo "https://github.com/example-org/app/pull/42"; exit 0';
@@ -803,8 +815,9 @@ exec "${realGit}" "$@"
     const branch = "worktree-workflow-allowCommit-20261023";
     expect(run.status).toBe(1);
     expect(run.errors[0]).toContain(
-      "gh pr create failed: a pull request already exists for this branch",
+      "gh pr create failed: a pull request already exists for this branch. Check that gh",
     );
+    expect(run.errors[0]).not.toContain("uncommitted change");
     expect(run.errors[0]).toEndWith(
       "; the pushed branch was deleted from origin again; nothing was left behind",
     );
@@ -911,6 +924,19 @@ describe("workflow propose: names, folders and a gh that does not answer", () =>
     expect(errors[0]).toEndWith(`The branch ${branch} is pushed.`);
     expect(errors[0]).toContain(`the pull request may be open: look at ${w.repo}'s pull requests`);
     // Not taken back: GitHub may have made the pull request just before the call ended.
+    expect(git(w.origin, "branch", "--list", branch)).toContain(branch);
+  });
+
+  test("gh pr create killed by a signal: the branch is left alone, as after a timeout", async () => {
+    const w = world({ gh: "create-killed" });
+    const branch = "worktree-workflow-allowCommit-20261023";
+    const run = await w.run(["propose", "allowCommit", "true"]);
+    expect(run.status).toBe(1);
+    expect(run.errors[0]).toStartWith(
+      `gh pr create was stopped by SIGKILL, so the pull request may be open: look at ${w.repo}'s pull requests`,
+    );
+    expect(run.errors[0]).toEndWith(`The branch ${branch} is pushed.`);
+    // gh may have made the pull request before it died: the pushed branch is its head.
     expect(git(w.origin, "branch", "--list", branch)).toContain(branch);
   });
 });

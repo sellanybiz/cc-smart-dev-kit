@@ -36,9 +36,10 @@
  * again — only while it still holds this run's commit — and the one line says what is left if
  * that fails. A push that failed or was ended may still have landed, so it is taken back the
  * same way, and the delete's own answer says whether anything was there. Two exceptions, both to
- * avoid destroying what may be someone else's: a `gh pr create` that does not answer in time
- * leaves the pushed branch (the pull request may exist), and a name another proposal took
- * between the check and the push is skipped for the next free one, never reused.
+ * avoid destroying what may be someone else's: a `gh pr create` that does not answer in time,
+ * or is ended by any other signal, leaves the pushed branch (the pull request may exist), and a
+ * name another proposal took between the check and the push is skipped for the next free one,
+ * never reused.
  */
 import { COMMAND } from "../build-info/names";
 import type { CliPaths } from "../cli/paths";
@@ -52,7 +53,7 @@ import {
   readCommittedFile,
 } from "../project/resolve";
 import { worktreeBranch } from "../worktrees/paths";
-import { GH_TIMEOUT_MS, type GhRunner, ghMissing, spawnGh } from "./merge-check";
+import { GH_TIMEOUT_MS, type GhRunner, ghMissing, runGh, spawnGh } from "./merge-check";
 import { type ResolvedWorkflow, resolvedValueOf, resolveWorkflow } from "./resolve";
 import { isProjectKey, PERSONAL_ONLY_REASONS, showValue, type WorkflowKey } from "./schema";
 import { editProjectSetting, type ProjectEdit, requiresRaiseText } from "./write";
@@ -475,9 +476,10 @@ function urlIn(text: string): string | null {
 }
 
 /**
- * `gh pr create` in the project, with its own stderr kept for the refusal's line. A **timeout
- * is its own answer**: GitHub may have made the pull request just before the call was ended, and
- * taking the pushed branch back then would close it — so the caller leaves everything as it is.
+ * `gh pr create` in the project, with its own stderr kept for the refusal's line. **An end by a
+ * signal is its own answer**, a timeout or gh dying alike: GitHub may have made the pull request
+ * just before the call was ended, and taking the pushed branch back then would close it — so the
+ * caller leaves everything as it is. A gh that never started made nothing, so it is a refusal.
  */
 async function createPullRequest(
   repo: string,
@@ -485,30 +487,14 @@ async function createPullRequest(
   args: string[],
   timeoutMs: number,
 ): Promise<Created> {
-  try {
-    const child = Bun.spawn(["gh", ...args], {
-      cwd: repo,
-      env: env as Record<string, string>,
-      stdin: "ignore",
-      stdout: "pipe",
-      stderr: "pipe",
-      timeout: timeoutMs,
-      windowsHide: true,
-    });
-    const [out, err, code] = await Promise.all([
-      new Response(child.stdout).text(),
-      new Response(child.stderr).text(),
-      child.exited,
-    ]);
-    if (child.signalCode !== null) return { ok: false, timedOut: true, why: "no answer in time" };
-    if (code !== 0) return { ok: false, timedOut: false, why: lastLine(err) };
-    const url = urlIn(out);
-    return url === null
-      ? { ok: false, timedOut: false, why: `gh printed no pull request URL (${lastLine(out)})` }
-      : { ok: true, url };
-  } catch (error) {
-    return { ok: false, timedOut: false, why: reasonOf(error) };
-  }
+  const { err, kind, out, signal } = await runGh(args, { env, folder: repo, timeoutMs });
+  if (kind === "timeout") return { ok: false, timedOut: true, why: "did not answer in time" };
+  if (signal !== undefined) return { ok: false, timedOut: true, why: `was stopped by ${signal}` };
+  if (kind !== "ok") return { ok: false, timedOut: false, why: lastLine(err) };
+  const url = urlIn(out);
+  return url === null
+    ? { ok: false, timedOut: false, why: `gh printed no pull request URL (${lastLine(out)})` }
+    : { ok: true, url };
 }
 
 /** The commit's options for signing: `-S` when `commit.gpgSign` is on, which `commit-tree` ignores. */
@@ -771,7 +757,7 @@ export async function proposeWorkflow(
     if (created.timedOut) {
       // Not taken back: the pull request may already exist, and the pushed branch is its head.
       return fail(
-        `gh pr create did not answer in time, so the pull request may be open: look at ${repo}'s pull requests on GitHub before running this again. The branch ${branch} is pushed.`,
+        `gh pr create ${created.why}, so the pull request may be open: look at ${repo}'s pull requests on GitHub before running this again. The branch ${branch} is pushed.`,
       );
     }
     return fail(
