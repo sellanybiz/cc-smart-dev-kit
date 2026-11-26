@@ -68,6 +68,16 @@ export function generatedIn(out: string): string[] {
   return generated;
 }
 
+/**
+ * The variables that make git read each commit's parents as committed: no replace ref, no graft
+ * (`info/grafts` or an inherited `GIT_GRAFT_FILE`) and no shallow cut (`shallow` or an inherited
+ * `GIT_SHALLOW_FILE`). `none` is a path that never exists. In a real shallow clone git then
+ * cannot walk past the cut, and the caller takes that failure on the safe side.
+ */
+export function committedHistory(none: string): Record<string, string> {
+  return { GIT_NO_REPLACE_OBJECTS: "1", GIT_GRAFT_FILE: none, GIT_SHALLOW_FILE: none };
+}
+
 /** A throwaway git folder that reads a repository's objects and one commit's attributes. */
 export interface BaseOnlyGit {
   /** The folder each call runs in: the work tree, empty until `readBase`. */
@@ -138,6 +148,7 @@ export function openBaseOnlyGit(commonDir: string, source: string): BaseOnlyGit 
       GIT_ATTR_SOURCE: source,
       GIT_CONFIG_COUNT: "0",
       GIT_CONFIG_PARAMETERS: "",
+      ...committedHistory(none),
     },
     args,
     checks: (paths) =>

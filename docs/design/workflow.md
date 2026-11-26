@@ -438,8 +438,12 @@ review of H itself covers H on any branch, as before. The one home is
   change's lines, and a local mark cannot make a real binary count as text. A binary file in the
   change is never covered. The replay's `merge-tree`, and the diff that compares its result, run
   in that folder too, so a local `merge=<driver>` attribute or a driver in the local config can
-  neither shape the replayed tree nor run a command. Every git call of the measure sets
-  `GIT_NO_REPLACE_OBJECTS=1`, so a local replace ref cannot stand in for a reviewed commit. The
+  neither shape the replayed tree nor run a command. Every git call of the measure reads the
+  history as committed (`committedHistory` in `src/project/generated.ts`):
+  `GIT_NO_REPLACE_OBJECTS=1`, and `GIT_GRAFT_FILE` and `GIT_SHALLOW_FILE` at a file that never
+  exists, so no local replace ref, graft (`info/grafts`) or shallow file can stand in for a
+  reviewed commit or move its merge base. In a real shallow clone the measure then cannot walk
+  past the cut, so it answers "not covered", as it did before. The
   base's files go into that folder only once a review is a candidate, so a pull request no
   review could cover pays nothing.
 - Anything it cannot read is "not covered", with the reason: the head or the reviewed commit not in

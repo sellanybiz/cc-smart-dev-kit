@@ -49,8 +49,8 @@ at the same time.
   system file no longer counts, so a local file cannot hide a big change from the review limit.
   What counts as binary is the base's too, and so is the replay's merge: no local attribute
   (a `* binary` that would zero a big change's lines), merge driver, inherited
-  `GIT_ATTR_SOURCE`, config passed in the environment or replace ref can change what the limit
-  measures. `workflow claims` reads every file as text, so a local `binary` mark or an
+  `GIT_ATTR_SOURCE`, config passed in the environment, replace ref, graft or shallow file can
+  change what the limit measures. `workflow claims` reads every file as text, so a local `binary` mark or an
   empty textconv cannot hide a claim either.
 
 **What to run:** `cc-smart-dev-kit update`, then restart open Claude Code sessions: a session keeps

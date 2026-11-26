@@ -52,7 +52,12 @@ import {
   runGitAsync,
 } from "../hooks/git";
 import type { Env } from "../hooks/run";
-import { type BaseOnlyGit, generatedIn, openBaseOnlyGit } from "../project/generated";
+import {
+  type BaseOnlyGit,
+  committedHistory,
+  generatedIn,
+  openBaseOnlyGit,
+} from "../project/generated";
 import type { Checkout } from "../project/resolve";
 import { COMMIT_SHA, type TrustedReview } from "./reviews";
 
@@ -363,10 +368,13 @@ async function measure(
   attributes: { opened: BaseOnlyGit | null },
 ): Promise<Cover> {
   const baseRef = `refs/remotes/origin/${base}`;
-  // Every call reads the repository's objects and writes only into the temporary folder.
+  // Every call reads the repository's objects and writes only into the temporary folder, and
+  // reads the history as committed: a local replace ref, graft or shallow cut could move the
+  // reviewed commit's merge base, or show the replay another tree.
   const own = {
     GIT_OBJECT_DIRECTORY: objects,
     GIT_ALTERNATE_OBJECT_DIRECTORIES: alternateEntry(join(checkout.commonDir, "objects")),
+    ...committedHistory(join(objects, "none")),
   };
   const run = async (
     args: string[],
@@ -375,11 +383,7 @@ async function measure(
   ): Promise<GitRun> => {
     const left = (git.timeFor ?? ((limit: number) => limit))(GUARD_GIT_TIMEOUT_MS);
     if (left <= 0) throw new OutOfTime();
-    // No call reads a replace ref: a local one could show the replay another commit's tree.
-    const result = await (git.run ?? runGitAsync)(cwd, args, git.env, left, {
-      ...vars,
-      GIT_NO_REPLACE_OBJECTS: "1",
-    });
+    const result = await (git.run ?? runGitAsync)(cwd, args, git.env, left, vars);
     if (result.code === null && result.err === GIT_TIMED_OUT) throw new OutOfTime();
     return result;
   };

@@ -135,6 +135,17 @@ describe("security: no local attribute file widens the base's marks", () => {
     expect(generated(repo, base, tree)).toEqual(BASE_MARKED);
   });
 
+  test("a replace ref on the source commit is not what is read", () => {
+    const { repo, base } = baseRepo();
+    git(repo, "checkout", "-q", "--orphan", "side");
+    writeFileSync(join(repo, ".gitattributes"), EVERYTHING);
+    git(repo, "add", ".gitattributes");
+    git(repo, "commit", "-q", "-m", "side");
+    const side = git(repo, "rev-parse", "HEAD").trim();
+    git(repo, "replace", base, side);
+    expect(generated(repo, base)).toEqual(BASE_MARKED);
+  });
+
   test("a mark only on the branch, committed or in the working tree", () => {
     const { repo, base } = baseRepo();
     git(repo, "checkout", "-q", "-b", "feat");
