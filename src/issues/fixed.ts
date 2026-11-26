@@ -21,7 +21,7 @@
  * back are the markers this file wrote.
  */
 import { COMMAND } from "../build-info/names";
-import { runGit } from "../hooks/git";
+import { commitArgs, commitIn, runGit } from "../hooks/git";
 import { GH_TIMEOUT_MS, GH_WRITE_TIMEOUT_MS, type GhResult } from "../workflow/merge-check";
 import { issuesOff, publicIssuesOff } from "../workflow/pr-switches";
 import {
@@ -353,9 +353,7 @@ export async function listFixed(
   range: { base: string; head: string },
 ): Promise<ListOutcome> {
   for (const ref of [range.base, range.head]) {
-    const known =
-      !ref.startsWith("-") &&
-      runGit(gate.cwd, ["rev-parse", "--verify", "--quiet", `${ref}^{commit}`], gate.env, 5_000).ok;
+    const known = commitIn(runGit(gate.cwd, commitArgs(ref), gate.env, 5_000)) !== null;
     if (!known) return { kind: "failed", why: `${ref} is no branch or commit in this folder` };
   }
   const listed = await gate.write([

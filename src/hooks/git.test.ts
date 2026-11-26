@@ -70,6 +70,17 @@ describe("commitArgs and commitIn", () => {
     expect(ask("main:a.txt")).toBeNull();
     expect(ask("no-such-ref")).toBeNull();
   });
+
+  test("a rev that starts with a dash names no commit and never reaches git as an option", () => {
+    const repo = tempDir("git-commit-dash");
+    git(repo, "init", "-q", "-b", "main");
+    git(repo, "commit", "-q", "--allow-empty", "-m", "first");
+    const args = commitArgs("--show-toplevel");
+    expect(args.slice(-2)).toEqual(["--end-of-options", "--show-toplevel^{commit}"]);
+    const run = runGit(repo, args, cleanGitEnv());
+    expect(run.code).toBe(1);
+    expect(commitIn(run)).toBeNull();
+  });
 });
 
 describe("parseWorktreeList", () => {

@@ -278,6 +278,19 @@ describe("refusals", () => {
     expect(findDeploySkills(root).named).toHaveLength(1);
   });
 
+  test("a skills folder linked to a folder whose name starts with .. is inside, searched and planned", () => {
+    const { root } = world();
+    const real = join(root, "..config", "claude", "skills");
+    mkdirSync(join(real, "deploy"), { recursive: true });
+    writeFileSync(join(real, "deploy", "SKILL.md"), AROUND_BEFORE);
+    mkdirSync(join(root, ".claude"), { recursive: true });
+    symlinkSync(real, join(root, ".claude", "skills"));
+    expect(skillsFolderLink(root)).toBeNull();
+    const found = findDeploySkills(root);
+    expect(found.named).toEqual([join(root, ".claude", "skills", "deploy", "SKILL.md")]);
+    expect(planDeploySkill(root, found.named[0] ?? "", "write").action).not.toBe("refused");
+  });
+
   test("a plain path that leaves the checkout says so without naming a link", () => {
     const { root } = world();
     const plan = planDeploySkill(root, join(root, "..", "elsewhere.md"), "write");

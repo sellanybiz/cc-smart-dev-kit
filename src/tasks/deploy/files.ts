@@ -4,7 +4,8 @@
  * facts live in `branch.ts`, the release gate in `release.ts`, the findings in `check.ts`.
  */
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { basename, dirname, isAbsolute, join, resolve } from "node:path";
+import { isInside } from "../../path-compare";
 import { atomicWrite } from "../../setup/write";
 import {
   DEPLOY_ENVS,
@@ -23,13 +24,17 @@ export interface DeployTaskSettings {
   dir?: string;
   staleDays?: number;
 }
+const OUTSIDE_CHECKOUT = "Task folder must be inside the checkout";
+/** `dir` resolved against the checkout, or a throw when it leaves it. */
+export function taskFolderIn(checkoutRoot: string, dir: string): string {
+  const target = resolve(checkoutRoot, dir);
+  if (!isInside(target, checkoutRoot)) throw new Error(OUTSIDE_CHECKOUT);
+  return target;
+}
 export function deployTasksDir(checkoutRoot: string, settings: DeployTaskSettings): string {
   const dir = settings.dir ?? DEFAULT_TASKS_DIR;
-  const target = resolve(checkoutRoot, dir);
-  const rel = relative(checkoutRoot, target);
-  if (isAbsolute(dir) || rel === ".." || rel.startsWith(`..${sep}`))
-    throw new Error("Task folder must be inside the checkout");
-  return target;
+  if (isAbsolute(dir)) throw new Error(OUTSIDE_CHECKOUT);
+  return taskFolderIn(checkoutRoot, dir);
 }
 export function isTaskFile(name: string): boolean {
   return !name.startsWith(".") && name !== "README.md" && name.endsWith(".md");

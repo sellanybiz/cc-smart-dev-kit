@@ -6,7 +6,7 @@
  * guard, not a security gate: it reads the checkout's working copy through the normal workflow
  * resolver.
  */
-import type { GitRun } from "../hooks/git";
+import { commitArgs, type GitRun } from "../hooks/git";
 import { parseGitVersion } from "../workflow/review-cover";
 import { TASK_TOOL } from "./words";
 import { isOpen, livePhaseCount, PARK_NOTE_PREFIX, runningTasksOf } from "./work/queries";
@@ -301,7 +301,7 @@ export function staleBriefWarning(check: StaleBriefCheck): string | null {
   const { phase, files, writtenAt, base, git } = check;
   if (writtenAt === null || files.length === 0) return null;
   const ref = `refs/remotes/origin/${base}`;
-  const known = git(["rev-parse", "--verify", "--quiet", `${ref}^{commit}`]);
+  const known = git(commitArgs(ref));
   if (!known.ok && known.code === 1) return null;
   const since = new Date(Math.floor(writtenAt / 1000) * 1000).toISOString();
   const log = git([
