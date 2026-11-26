@@ -31,7 +31,6 @@
 import { existsSync, realpathSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { type GitRun, parseWorktreeList, runGit, runGitAsync } from "../hooks/git";
-import { gitEnv } from "../project/git-env";
 import {
   type Checkout,
   locateCheckout,
@@ -111,9 +110,9 @@ export interface ProjectCheckout {
   root: string;
 }
 
-/** The git line that asks whether the personal file is tracked: one home for both twins. */
-function trackedArgv(): string[] {
-  return ["git", "ls-files", "--error-unmatch", "--", `.claude/${PERSONAL_FILE}`];
+/** The git call that asks whether the personal file is tracked: one home for both twins. */
+function trackedArgs(): string[] {
+  return ["ls-files", "--error-unmatch", "--", `.claude/${PERSONAL_FILE}`];
 }
 
 /** What `ls-files --error-unmatch` exiting with `code` says: tracked, not tracked, or unknown. */
@@ -125,41 +124,19 @@ function trackedFromExit(code: null | number): boolean | null {
  * Whether git tracks the personal file of `mainCheckout`: `git ls-files --error-unmatch` answers
  * 0 for a tracked path, 1 for one it does not know, anything else (no git, not a repo, a git
  * that ran out of time) is null — the caller then says it could not tell, never that the file
- * is safe. `GIT_*` goes, as in `locateCheckout`, so a hook's or a session's own `GIT_DIR` cannot
- * redirect it.
+ * is safe. `runGit` drops `GIT_*`, as `locateCheckout` does, so a hook's or a session's own
+ * `GIT_DIR` cannot redirect it. A timeout's code is null: no answer.
  */
 function personalTracked(mainCheckout: string): boolean | null {
-  try {
-    const result = Bun.spawnSync(trackedArgv(), {
-      cwd: mainCheckout,
-      env: gitEnv(process.env),
-      stderr: "ignore",
-      stdout: "ignore",
-      timeout: RESOLVE_GIT_TIMEOUT_MS,
-    });
-    return trackedFromExit(result.exitCode);
-  } catch {
-    return null;
-  }
+  return trackedFromExit(
+    runGit(mainCheckout, trackedArgs(), process.env, RESOLVE_GIT_TIMEOUT_MS).code,
+  );
 }
 
-/** `personalTracked` without blocking (`Bun.spawn`): the portal's twin. */
+/** `personalTracked` without blocking (`runGitAsync`): the portal's twin. */
 async function personalTrackedAsync(mainCheckout: string): Promise<boolean | null> {
-  try {
-    const child = Bun.spawn(trackedArgv(), {
-      cwd: mainCheckout,
-      env: gitEnv(process.env),
-      stderr: "ignore",
-      stdin: "ignore",
-      stdout: "ignore",
-      timeout: RESOLVE_GIT_TIMEOUT_MS,
-    });
-    const code = await child.exited;
-    // A timeout's kill ends with a signal: no answer, as the blocking twin reads it.
-    return child.signalCode === null ? trackedFromExit(code) : null;
-  } catch {
-    return null;
-  }
+  const run = await runGitAsync(mainCheckout, trackedArgs(), process.env, RESOLVE_GIT_TIMEOUT_MS);
+  return trackedFromExit(run.code);
 }
 
 /** A folder's gateway state: what its project chose, what a session gets, and why. */
@@ -425,7 +402,7 @@ export function projectGatewayState(
 
 /**
  * `projectGatewayState`, without blocking: the same answer, its two git reads awaited
- * (`locateCheckoutAsync`, and `ls-files` through `Bun.spawn`). The portal's Project card and the
+ * (`locateCheckoutAsync`, and `ls-files` through `runGitAsync`). The portal's Project card and the
  * doctor pass's per-project lines run inside the portal's server, where a blocking spawn freezes
  * every page and the live stream (`.claude/rules/portal.md`). Every other step is the same code.
  */
