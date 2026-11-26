@@ -25,7 +25,7 @@ import { makeClone, writeClaudeFile, writePersonalWorkflow } from "../testing/ho
 import { cleanGitEnv, git, tempDir } from "../testing/temp";
 import { PROCESS_TEST_TIMEOUT_MS } from "../testing/timeouts";
 import { runWorkflow, type WorkflowContext } from "./commands";
-import { ghLoginState, proposeWorkflow } from "./propose";
+import { ghLoginState, type ProposedJson, proposeWorkflow } from "./propose";
 
 // The flow starts git and gh children: its own speed limit (src/testing/timeouts.ts).
 setDefaultTimeout(PROCESS_TEST_TIMEOUT_MS);
@@ -301,20 +301,19 @@ It counts once this pull request is merged into main: merge-check reads the revi
     );
   });
 
-  test("--json answers the pull request in one line", async () => {
+  test("--json answers the pull request in one line, in the shape the portal reads", async () => {
     const w = world();
     const run = await w.run(["propose", "openPr", "draft", "--json"]);
-    const branch = "worktree-workflow-openPr-20261023";
     expect(run.status).toBe(0);
     expect(run.lines).toHaveLength(1);
-    expect(JSON.parse(run.lines[0] ?? "")).toEqual({
-      branch,
+    const expected: ProposedJson = {
+      branch: "worktree-workflow-openPr-20261023",
       from: null,
       setting: "openPr",
       to: "draft",
       url: "https://github.com/example-org/app/pull/42",
-      worktree: join(w.repo, ".claude/worktrees", "workflow-openPr-20261023"),
-    });
+    };
+    expect(JSON.parse(run.lines[0] ?? "")).toEqual(expected);
   });
 
   test("a project with no file: refused, project init first, nothing made", async () => {

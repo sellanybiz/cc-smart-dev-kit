@@ -145,6 +145,26 @@ export async function ghLoginState(
   return answer === null ? "out" : "in";
 }
 
+/**
+ * What a proposal's commit is not: it is made by git plumbing, so none of the project's own git
+ * hooks ran on it. Said in the command's output, the pull request's body and the portal's card.
+ */
+export const MADE_WITHOUT_HOOKS =
+  "The commit was made without the project's git hooks: a line a hook adds (such as a sign-off) is missing, and a clean filter on the file did not run. The review and CI are its gate.";
+
+/**
+ * The one line `--json` prints when the pull request is open, and nothing else: the contract the
+ * portal reads (`src/portal/actions.ts`). An unset value is `null`. On any refusal no JSON is
+ * printed, so a URL never comes out of a failure.
+ */
+export interface ProposedJson {
+  branch: string;
+  from: unknown;
+  setting: WorkflowKey;
+  to: unknown;
+  url: string;
+}
+
 /** Everything one `workflow propose` run is given. */
 export interface ProposeContext {
   paths: CliPaths;
@@ -612,16 +632,14 @@ export async function proposeWorkflow(
   }
 
   if (options.json) {
-    context.print(
-      JSON.stringify({
-        branch,
-        from: from ?? null,
-        setting: key,
-        to: value ?? null,
-        url: created.url,
-        worktree,
-      }),
-    );
+    const proposed: ProposedJson = {
+      branch,
+      from: from ?? null,
+      setting: key,
+      to: value ?? null,
+      url: created.url,
+    };
+    context.print(JSON.stringify(proposed));
     return 0;
   }
   context.print(`+ ${key} = ${saidValue(key, value)} in ${CONFIG_PATH}`);
